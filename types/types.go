@@ -1,0 +1,77 @@
+package types
+
+import (
+	"time"
+
+	"github.com/google/uuid"
+)
+
+type UserStore interface {
+	GetUserByEmail(email string) (*User, error)
+	GetUserByID(id uuid.UUID) (*User, error)
+	GetUserByLogin(login string) (*User, error)
+	GetSessionByUserID(id uuid.UUID) ([]Session, error)
+	CreateUser(User) error
+	UpdateUser(User) error
+	CreateSession(Session) error
+	DeleteUser(id uuid.UUID) error
+}
+
+type Session struct {
+	ID        uuid.UUID `json:"id"`
+	UserID    uuid.UUID `json:"user_id"`
+	IP        string    `json:"ip"`
+	UserAgent string    `json:"user_agent"`
+	CreatedAt time.Time `json:"created_at"`
+}
+
+type User struct {
+	ID              uuid.UUID `json:"id"`
+	Username        string    `json:"username"`
+	Email           string    `json:"email"`
+	Password        string    `json:"password"`
+	IsVerified      bool      `json:"isVerified"`
+	VerificationOTP string    `json:"-"`
+	OTPExp          time.Time `json:"-"`
+	CreatedAt       time.Time `json:"createdAt"`
+	UpdatedAt       time.Time `json:"updatedAt"`
+}
+
+type RegisterUserPayload struct {
+	Username string `json:"username" validate:"required,min=1,max=20"`
+	Email    string `json:"email" validate:"required"`
+	Password string `json:"password" validate:"required,min=6,max=20"`
+}
+
+type LoginUserPayload struct {
+	Login    string `json:"login" validate:"required"`
+	Password string `json:"password" validate:"required,min=6,max=20"`
+}
+
+type ForgotPasswordPayload struct {
+	Email string `json:"email" validate:"required,email"`
+}
+
+type ResetForgotPasswordPayload struct {
+	Email       string `json:"email" validate:"required,email"`
+	OTP         string `json:"otp" validate:"required"`
+	NewPassword string `json:"newPassword" validate:"required, min=6, max=20"`
+}
+
+type ResetPasswordPayload struct {
+	CurrentPassword string `json:"currentPassword" validate:"required"`
+	NewPassword     string `json:"newPassword" validate:"required,min=6,max=20"`
+}
+
+type ResendOTPPayload struct {
+	Email string `json:"email" validate:"required,email"`
+}
+
+type VerifyOTPPayload struct {
+	Email string `json:"email" validate:"required,email"`
+	OTP   string `json:"otp" validate:"required"`
+}
+
+type UpdateProfilePayload struct {
+	Username string `json:"username" validate:"omitempty,min=2,max=20"`
+}

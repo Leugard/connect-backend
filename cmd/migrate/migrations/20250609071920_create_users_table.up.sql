@@ -1,0 +1,13 @@
+CREATE TABLE IF NOT EXISTS users (
+    id CHAR(36) PRIMARY KEY DEFAULT(UUID()),
+    username VARCHAR(20) NOT NULL,
+    email VARCHAR(255) NOT NULL UNIQUE,
+    password VARCHAR(255) NOT NULL,
+    is_verified BOOLEAN NOT NULL DEFAULT FALSE,
+    verification_otp VARCHAR(5),
+    otp_exp TIMESTAMP NULL,
+    created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    INDEX idx_email (email),
+    INDEX idx_username (username)
+);
