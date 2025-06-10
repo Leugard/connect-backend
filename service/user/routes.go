@@ -151,7 +151,7 @@ func (h *Handler) handleRegister(w http.ResponseWriter, r *http.Request) {
 	})
 
 	if err != nil {
-		utils.WriteError(w, http.StatusInternalServerError, fmt.Errorf("KOntol"))
+		utils.WriteError(w, http.StatusInternalServerError, fmt.Errorf("Kontol"))
 		return
 	}
 
