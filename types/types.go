@@ -12,12 +12,14 @@ type UserStore interface {
 	GetUserByLogin(login string) (*User, error)
 	GetRefreshToken(token string) (*RefreshToken, error)
 	GetSessionByUser(userID uuid.UUID) ([]Session, error)
+	GetSessionByID(id uuid.UUID) (*Session, error)
 	CreateUser(User) error
 	CreateSession(session Session) error
 	UpdateUser(User) error
 	SaveRefreshToken(rt RefreshToken) error
 	DeleteUser(id uuid.UUID) error
 	DeleteRefreshToken(token string) error
+	DeleteSessionByID(userID uuid.UUID, sessionID uuid.UUID) error
 }
 
 type RefreshToken struct {

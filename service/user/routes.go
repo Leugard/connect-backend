@@ -25,6 +25,7 @@ func NewHandler(store types.UserStore) *Handler {
 func (h *Handler) RegisterRoutes(router *mux.Router) {
 	router.HandleFunc("/register", h.handleRegister).Methods("POST")
 	router.HandleFunc("/login", h.handleLogin).Methods("POST")
+	router.HandleFunc("/google", h.handleGoogleLogin).Methods("POST")
 	router.Handle("/logout", middleware.RequireAuth(http.HandlerFunc(h.handleLogout))).Methods("POST")
 	router.HandleFunc("/refresh-token", h.handleRefreshToken).Methods("POST")
 
@@ -32,6 +33,7 @@ func (h *Handler) RegisterRoutes(router *mux.Router) {
 	router.Handle("/resend-otp", middleware.RequireAuth(http.HandlerFunc(h.handleResendOTP))).Methods("POST")
 	router.Handle("/onboarding", middleware.RequireAuth(http.HandlerFunc(h.handleOnboarding))).Methods("POST")
 	router.Handle("/sessions", middleware.RequireAuth(http.HandlerFunc(h.handleListSessions))).Methods("GET")
+	router.Handle("/sessions/{id}", middleware.RequireAuth(http.HandlerFunc(h.handleDeleteSession))).Methods("DELETE")
 	router.Handle("/me", middleware.RequireAuth(middleware.RequireVerified(h.store.GetUserByID)(http.HandlerFunc(h.handleProfile)))).Methods("GET")
 }
 
@@ -196,6 +198,79 @@ func (h *Handler) handleLogin(w http.ResponseWriter, r *http.Request) {
 		"accessToken":  accessToken,
 		"refreshToken": refreshToken,
 		"isVerified":   u.IsVerified,
+	})
+}
+
+func (h *Handler) handleGoogleLogin(w http.ResponseWriter, r *http.Request) {
+	var payload struct {
+		IDToken string `json:"idToken" validate:"required"`
+	}
+
+	if err := utils.ParseJSON(r, &payload); err != nil {
+		utils.WriteError(w, http.StatusBadRequest, err)
+		return
+	}
+
+	if err := utils.Validate.Struct(payload); err != nil {
+		utils.WriteError(w, http.StatusBadRequest, fmt.Errorf("invalid input"))
+		return
+	}
+
+	gPayload, err := auth.VerifyGoogleIDToken(payload.IDToken)
+	if err != nil {
+		utils.WriteError(w, http.StatusUnauthorized, err)
+		return
+	}
+
+	email, ok := gPayload.Claims["email"].(string)
+	if !ok {
+		utils.WriteError(w, http.StatusInternalServerError, fmt.Errorf("failed to get email from Google claims", err.Error()))
+		return
+	}
+	name, _ := gPayload.Claims["name"].(string)
+	picture, _ := gPayload.Claims["picture"].(string)
+
+	user, err := h.store.GetUserByEmail(email)
+	if err != nil {
+		user = &types.User{
+			ID:           uuid.New(),
+			Email:        email,
+			Username:     name,
+			IsVerified:   false,
+			ProfileImage: picture,
+			CreatedAt:    time.Now(),
+			UpdatedAt:    time.Now(),
+		}
+		if err := h.store.CreateUser(*user); err != nil {
+			utils.WriteError(w, 500, fmt.Errorf("failed to create google user"))
+			return
+		}
+	}
+
+	accessToken, err := auth.GenerateJWT(user.ID.String())
+	if err != nil {
+		utils.WriteError(w, http.StatusInternalServerError, fmt.Errorf("failed to generate access token"))
+		return
+	}
+
+	refreshToken := uuid.New().String()
+	refreshExp := time.Now().Add(7 * 24 * time.Hour)
+
+	err = h.store.SaveRefreshToken(types.RefreshToken{
+		ID:        uuid.New(),
+		UserID:    user.ID,
+		Token:     refreshToken,
+		ExpiresAt: refreshExp,
+	})
+	if err != nil {
+		utils.WriteError(w, 500, fmt.Errorf("failed to store refresh token"))
+		return
+	}
+
+	utils.WriteJSON(w, http.StatusOK, map[string]any{
+		"accessToken":  accessToken,
+		"refreshToken": refreshToken,
+		"isVerified":   user.IsVerified,
 	})
 }
 
@@ -458,6 +533,39 @@ func (h *Handler) handleListSessions(w http.ResponseWriter, r *http.Request) {
 	}
 
 	utils.WriteJSON(w, http.StatusOK, result)
+}
+
+func (h *Handler) handleDeleteSession(w http.ResponseWriter, r *http.Request) {
+	vars := mux.Vars(r)
+	sessionID := vars["id"]
+
+	id, err := uuid.Parse(sessionID)
+	if err != nil {
+		utils.WriteError(w, http.StatusBadRequest, fmt.Errorf("invalid session ID"))
+		return
+	}
+
+	userID, ok := r.Context().Value(middleware.UserIDKey).(string)
+	if !ok || userID == "" {
+		utils.WriteError(w, http.StatusUnauthorized, fmt.Errorf("unauthorized"))
+		return
+	}
+	user, _ := uuid.Parse(userID)
+
+	session, err := h.store.GetSessionByID(id)
+	if err == nil && session.UserID == user {
+		_ = h.store.DeleteRefreshToken(session.RefreshToken)
+	}
+
+	if err := h.store.DeleteSessionByID(user, id); err != nil {
+		utils.WriteError(w, http.StatusInternalServerError, fmt.Errorf("failed to delete session"))
+		return
+	}
+
+	utils.WriteJSON(w, http.StatusOK, map[string]string{
+		"message": "session logged out successfully",
+	})
+
 }
 
 func (h *Handler) handleProfile(w http.ResponseWriter, r *http.Request) {

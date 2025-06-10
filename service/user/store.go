@@ -111,6 +111,21 @@ func (s *Store) GetSessionByUser(userID uuid.UUID) ([]types.Session, error) {
 	return sessions, nil
 }
 
+func (s *Store) GetSessionByID(id uuid.UUID) (*types.Session, error) {
+	row := s.db.QueryRow(`SELECT id, user_id, device_id, ip_address, user_agent, refresh_token, created_at FROM sessions WHERE id = ?`, id.String())
+
+	var ses types.Session
+	var uid string
+	if err := row.Scan(
+		&ses.ID, &uid, &ses.DeviceID, &ses.IpAddress, &ses.UserAgent, &ses.RefreshToken, &ses.CreatedAt,
+	); err != nil {
+		return nil, err
+	}
+	ses.UserID, _ = uuid.Parse(uid)
+
+	return &ses, nil
+}
+
 func (s *Store) CreateUser(user types.User) error {
 	_, err := s.db.Exec("INSERT INTO users (id, username, email, password, is_verified, verification_otp, otp_exp, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)", user.ID, user.Username, user.Email, user.Password, user.IsVerified, user.VerificationOTP, user.OTPExp, user.CreatedAt, user.UpdatedAt)
 	if err != nil {
@@ -160,6 +175,12 @@ func (s *Store) DeleteUser(id uuid.UUID) error {
 
 func (s *Store) DeleteRefreshToken(token string) error {
 	_, err := s.db.Exec(`DELETE FROM refresh_tokens WHERE token = ?`, token)
+
+	return err
+}
+
+func (s *Store) DeleteSessionByID(userID uuid.UUID, sessionID uuid.UUID) error {
+	_, err := s.db.Exec(`DELETE FROM sessions WHERE id = ? AND user_id = ?`, sessionID.String(), userID.String())
 
 	return err
 }
