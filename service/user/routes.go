@@ -141,6 +141,27 @@ func (h *Handler) handleLogin(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	accessToken, err := auth.GenerateJWT(u.ID.String())
+	if err != nil {
+		utils.WriteError(w, http.StatusInternalServerError, fmt.Errorf("failed to generate access token"))
+		return
+	}
+
+	refreshToken := uuid.New().String()
+	refreshExp := time.Now().Add(7 * 24 * time.Hour)
+
+	err = h.store.SaveRefreshToken(types.RefreshToken{
+		ID:        uuid.New(),
+		UserID:    u.ID,
+		Token:     refreshToken,
+		ExpiresAt: refreshExp,
+	})
+
+	if err != nil {
+		utils.WriteError(w, http.StatusInternalServerError, fmt.Errorf("failed to store refresh token", err.Error()))
+		return
+	}
+
 	if err := utils.SendEmailOTP(u.Email, otp); err != nil {
 		utils.WriteError(w, http.StatusInternalServerError, fmt.Errorf("failed to send OTP"))
 		return
@@ -148,16 +169,11 @@ func (h *Handler) handleLogin(w http.ResponseWriter, r *http.Request) {
 
 	utils.MarkOTPSent(u.Email)
 
-	token, err := auth.GenerateJWT(u.ID.String())
-	if err != nil {
-		utils.WriteError(w, http.StatusInternalServerError, fmt.Errorf("failed to generate token"))
-		return
-	}
-
 	utils.WriteJSON(w, http.StatusOK, map[string]any{
-		"message":    "OTP sent to your email",
-		"token":      token,
-		"isVerified": u.IsVerified,
+		"message":      "OTP sent to your email",
+		"accessToken":  accessToken,
+		"refreshToken": refreshToken,
+		"isVerified":   u.IsVerified,
 	})
 }
 

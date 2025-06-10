@@ -74,26 +74,18 @@ func (s *Store) GetUserByLogin(login string) (*types.User, error) {
 	return scanRowIntoUser(rows)
 }
 
-func (s *Store) GetSessionByUserID(userID uuid.UUID) ([]types.Session, error) {
-	rows, err := s.db.Query(`SELECT * FROM sessions WHERE user_id = ? ORDER BY created_at DESC`, userID.String())
+func (s *Store) GetRefreshToken(token string) (*types.RefreshToken, error) {
+	row := s.db.QueryRow(`SELECT * FROM refresh_tokens WHERE token = ?`, token)
+
+	var rt types.RefreshToken
+	var uid string
+	err := row.Scan(&rt.ID, &uid, &rt.Token, &rt.ExpiresAt, &rt.CreatedAt)
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
 
-	var sessions []types.Session
-	for rows.Next() {
-		var ses types.Session
-		var id, uid string
-		if err := rows.Scan(&id, &uid, &ses.IP, &ses.UserAgent, &ses.CreatedAt); err != nil {
-			continue
-		}
-		ses.ID, _ = uuid.Parse(id)
-		ses.UserID, _ = uuid.Parse(uid)
-		sessions = append(sessions, ses)
-	}
-
-	return sessions, nil
+	rt.UserID, _ = uuid.Parse(uid)
+	return &rt, nil
 }
 
 func (s *Store) CreateUser(user types.User) error {
@@ -124,23 +116,22 @@ func (s *Store) UpdateUser(user types.User) error {
 	return nil
 }
 
+func (s *Store) SaveRefreshToken(rt types.RefreshToken) error {
+	_, err := s.db.Exec(`INSERT INTO refresh_tokens (id,user_id,token,expires_at) VALUES (?,?,?,?)`, rt.ID, rt.UserID, rt.Token, rt.ExpiresAt)
+
+	return err
+}
+
 func (s *Store) DeleteUser(id uuid.UUID) error {
 	_, err := s.db.Exec("DELETE FROM users WHERE ID = ?", id.String())
 
 	return err
 }
 
-func (s *Store) CreateSession(ses types.Session) error {
-	_, err := s.db.Exec(`
-		INSERT INTO sessions (id, user_id, ip_address, user_agent, created_at)
-		VALUES (?, ?, ?, ?, ?)`, ses.ID.String(), ses.UserID.String(), ses.IP, ses.UserAgent, ses.CreatedAt)
-	return err
-}
+func (s *Store) DeleteRefreshToken(token string) error {
+	_, err := s.db.Exec(`DELETE FROM refresh_tokens WHERE = ?`, token)
 
-func (s *Store) SessionExists(id uuid.UUID) bool {
-	var exists int
-	err := s.db.QueryRow("SELECT 1 FROM sessions WHERE id ? LIMIT 1", id.String()).Scan(&exists)
-	return err == nil
+	return err
 }
 
 func scanRowIntoUser(rows *sql.Rows) (*types.User, error) {

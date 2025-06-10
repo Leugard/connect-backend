@@ -10,19 +10,20 @@ type UserStore interface {
 	GetUserByEmail(email string) (*User, error)
 	GetUserByID(id uuid.UUID) (*User, error)
 	GetUserByLogin(login string) (*User, error)
-	GetSessionByUserID(id uuid.UUID) ([]Session, error)
+	GetRefreshToken(token string) (*RefreshToken, error)
 	CreateUser(User) error
 	UpdateUser(User) error
-	CreateSession(Session) error
+	SaveRefreshToken(rt RefreshToken) error
 	DeleteUser(id uuid.UUID) error
+	DeleteRefreshToken(token string) error
 }
 
-type Session struct {
-	ID        uuid.UUID `json:"id"`
-	UserID    uuid.UUID `json:"user_id"`
-	IP        string    `json:"ip"`
-	UserAgent string    `json:"user_agent"`
-	CreatedAt time.Time `json:"created_at"`
+type RefreshToken struct {
+	ID        uuid.UUID
+	UserID    uuid.UUID
+	Token     string
+	ExpiresAt time.Time
+	CreatedAt time.Time
 }
 
 type User struct {
