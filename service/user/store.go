@@ -88,6 +88,29 @@ func (s *Store) GetRefreshToken(token string) (*types.RefreshToken, error) {
 	return &rt, nil
 }
 
+func (s *Store) GetSessionByUser(userID uuid.UUID) ([]types.Session, error) {
+	rows, err := s.db.Query(`SELECT id, user_id, device_id, ip_address, user_agent, refresh_token, created_at FROM sessions WHERE user_id = ?`,
+		userID.String())
+
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var sessions []types.Session
+	for rows.Next() {
+		var ses types.Session
+		var uid string
+		if err := rows.Scan(&ses.ID, &uid, &ses.DeviceID, &ses.IpAddress, &ses.UserAgent, &ses.RefreshToken, &ses.CreatedAt); err != nil {
+			return nil, err
+		}
+		ses.UserID, _ = uuid.Parse(uid)
+		sessions = append(sessions, ses)
+	}
+
+	return sessions, nil
+}
+
 func (s *Store) CreateUser(user types.User) error {
 	_, err := s.db.Exec("INSERT INTO users (id, username, email, password, is_verified, verification_otp, otp_exp, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)", user.ID, user.Username, user.Email, user.Password, user.IsVerified, user.VerificationOTP, user.OTPExp, user.CreatedAt, user.UpdatedAt)
 	if err != nil {
@@ -95,6 +118,13 @@ func (s *Store) CreateUser(user types.User) error {
 	}
 
 	return nil
+}
+
+func (s *Store) CreateSession(session types.Session) error {
+	_, err := s.db.Exec(`INSERT INTO sessions (id, user_id, device_id, ip_address, user_agent, refresh_token, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)`,
+		session.ID.String(), session.UserID.String(), session.DeviceID, session.IpAddress, session.UserAgent, session.RefreshToken, session.CreatedAt)
+
+	return err
 }
 
 func (s *Store) UpdateUser(user types.User) error {

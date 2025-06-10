@@ -31,6 +31,7 @@ func (h *Handler) RegisterRoutes(router *mux.Router) {
 	router.Handle("/verify-otp", middleware.RequireAuth(http.HandlerFunc(h.handleVerifyOTP))).Methods("POST")
 	router.Handle("/resend-otp", middleware.RequireAuth(http.HandlerFunc(h.handleResendOTP))).Methods("POST")
 	router.Handle("/onboarding", middleware.RequireAuth(http.HandlerFunc(h.handleOnboarding))).Methods("POST")
+	router.Handle("/sessions", middleware.RequireAuth(http.HandlerFunc(h.handleListSessions))).Methods("GET")
 	router.Handle("/me", middleware.RequireAuth(middleware.RequireVerified(h.store.GetUserByID)(http.HandlerFunc(h.handleProfile)))).Methods("GET")
 }
 
@@ -170,6 +171,25 @@ func (h *Handler) handleLogin(w http.ResponseWriter, r *http.Request) {
 	}
 
 	utils.MarkOTPSent(u.Email)
+
+	ip := middleware.GetIP(r.RemoteAddr)
+	ua := r.UserAgent()
+	deviceID := utils.HashDeviceInfo(ip, ua)
+
+	session := types.Session{
+		ID:           uuid.New(),
+		UserID:       u.ID,
+		DeviceID:     deviceID,
+		IpAddress:    ip,
+		UserAgent:    ua,
+		RefreshToken: refreshToken,
+		CreatedAt:    time.Now(),
+	}
+
+	if err := h.store.CreateSession(session); err != nil {
+		utils.WriteError(w, http.StatusInternalServerError, fmt.Errorf("failed to store session", err.Error()))
+		return
+	}
 
 	utils.WriteJSON(w, http.StatusOK, map[string]any{
 		"message":      "OTP sent to your email",
@@ -410,6 +430,34 @@ func (h *Handler) handleOnboarding(w http.ResponseWriter, r *http.Request) {
 	utils.WriteJSON(w, http.StatusOK, map[string]string{
 		"message": "onboarding completed successfully",
 	})
+}
+
+func (h *Handler) handleListSessions(w http.ResponseWriter, r *http.Request) {
+	userID, ok := r.Context().Value(middleware.UserIDKey).(string)
+	if !ok || userID == "" {
+		utils.WriteError(w, http.StatusUnauthorized, fmt.Errorf("unauthorized"))
+		return
+	}
+
+	id, _ := uuid.Parse(userID)
+	sessions, err := h.store.GetSessionByUser(id)
+	if err != nil {
+		utils.WriteError(w, http.StatusInternalServerError, err)
+		return
+	}
+
+	var result []map[string]any
+	for _, s := range sessions {
+		result = append(result, map[string]any{
+			"id":        s.ID,
+			"deviceId":  s.DeviceID,
+			"userAgent": s.UserAgent,
+			"ipAddress": s.IpAddress,
+			"createdAt": s.CreatedAt,
+		})
+	}
+
+	utils.WriteJSON(w, http.StatusOK, result)
 }
 
 func (h *Handler) handleProfile(w http.ResponseWriter, r *http.Request) {

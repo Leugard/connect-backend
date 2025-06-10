@@ -1,6 +1,8 @@
 package utils
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -26,4 +28,10 @@ func WriteJSON(w http.ResponseWriter, status int, v any) error {
 
 func WriteError(w http.ResponseWriter, status int, err error) {
 	WriteJSON(w, status, map[string]any{"success": false, "error": err.Error()})
+}
+
+func HashDeviceInfo(ip, userAgent string) string {
+	data := ip + ":" + userAgent
+	hash := sha256.Sum256([]byte(data))
+	return hex.EncodeToString(hash[:])
 }
