@@ -25,6 +25,8 @@ func NewHandler(store types.UserStore) *Handler {
 func (h *Handler) RegisterRoutes(router *mux.Router) {
 	router.HandleFunc("/register", h.handleRegister).Methods("POST")
 	router.HandleFunc("/login", h.handleLogin).Methods("POST")
+	router.Handle("/logout", middleware.RequireAuth(http.HandlerFunc(h.handleLogout))).Methods("POST")
+	router.HandleFunc("/refresh-token", h.handleRefreshToken).Methods("POST")
 
 	router.Handle("/verify-otp", middleware.RequireAuth(http.HandlerFunc(h.handleVerifyOTP))).Methods("POST")
 	router.Handle("/resend-otp", middleware.RequireAuth(http.HandlerFunc(h.handleResendOTP))).Methods("POST")
@@ -177,6 +179,42 @@ func (h *Handler) handleLogin(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+func (h *Handler) handleLogout(w http.ResponseWriter, r *http.Request) {
+	var payload struct {
+		RefreshToken string `json:"refreshToken" validate:"required"`
+	}
+	if err := utils.ParseJSON(r, &payload); err != nil {
+		utils.WriteError(w, http.StatusBadRequest, fmt.Errorf(err.Error()))
+		return
+	}
+
+	if err := utils.Validate.Struct(payload); err != nil {
+		utils.WriteError(w, http.StatusBadRequest, fmt.Errorf("invalid input"))
+		return
+	}
+
+	userID, ok := r.Context().Value(middleware.UserIDKey).(string)
+	if !ok {
+		utils.WriteError(w, http.StatusUnauthorized, fmt.Errorf("unauthorized"))
+		return
+	}
+
+	rt, err := h.store.GetRefreshToken(payload.RefreshToken)
+	if err != nil || rt.UserID.String() != userID {
+		utils.WriteError(w, http.StatusUnauthorized, fmt.Errorf("invalid refresh token"))
+		return
+	}
+
+	if err := h.store.DeleteRefreshToken(payload.RefreshToken); err != nil {
+		utils.WriteError(w, http.StatusInternalServerError, fmt.Errorf("failed to revoke token"))
+		return
+	}
+
+	utils.WriteJSON(w, http.StatusOK, map[string]string{
+		"message": "logout seccesful",
+	})
+}
+
 func (h *Handler) handleResendOTP(w http.ResponseWriter, r *http.Request) {
 	userID, ok := r.Context().Value(middleware.UserIDKey).(string)
 	if !ok || userID == "" {
@@ -270,6 +308,61 @@ func (h *Handler) handleVerifyOTP(w http.ResponseWriter, r *http.Request) {
 		"message":    "Account verified successfully",
 		"isVerified": user.IsVerified,
 		"needsSetup": !user.IsVerified,
+	})
+}
+
+func (h *Handler) handleRefreshToken(w http.ResponseWriter, r *http.Request) {
+	var payload struct {
+		RefreshToken string `json:"refreshToken" validate:"required"`
+	}
+
+	if err := utils.ParseJSON(r, &payload); err != nil {
+		utils.WriteError(w, http.StatusBadRequest, err)
+		return
+	}
+
+	if err := utils.Validate.Struct(payload); err != nil {
+		utils.WriteError(w, http.StatusBadRequest, fmt.Errorf("invalid input"))
+		return
+	}
+
+	oldRT, err := h.store.GetRefreshToken(payload.RefreshToken)
+	if err != nil {
+		utils.WriteError(w, http.StatusUnauthorized, fmt.Errorf("invalid refresh token", err.Error()))
+		return
+	}
+
+	if time.Now().After(oldRT.ExpiresAt) {
+		_ = h.store.DeleteRefreshToken(payload.RefreshToken)
+		utils.WriteError(w, http.StatusUnauthorized, fmt.Errorf("refresh token expired"))
+		return
+	}
+
+	_ = h.store.DeleteRefreshToken(payload.RefreshToken)
+
+	accessToken, err := auth.GenerateJWT(oldRT.UserID.String())
+	if err != nil {
+		utils.WriteError(w, http.StatusInternalServerError, fmt.Errorf("failed to generate access token"))
+		return
+	}
+
+	newRTValue := uuid.New().String()
+	newRT := types.RefreshToken{
+		ID:        uuid.New(),
+		UserID:    oldRT.UserID,
+		Token:     newRTValue,
+		ExpiresAt: time.Now().Add(7 * 24 * time.Hour),
+	}
+
+	if err := h.store.SaveRefreshToken(newRT); err != nil {
+		utils.WriteError(w, http.StatusInternalServerError, fmt.Errorf("failed to store new refresh token"))
+		return
+	}
+
+	utils.WriteJSON(w, http.StatusOK, map[string]string{
+		"accessToken":  accessToken,
+		"refreshToken": newRT.Token,
+		"expiresIn":    "900",
 	})
 }
 
