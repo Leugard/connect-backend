@@ -28,6 +28,8 @@ type Session struct {
 type User struct {
 	ID              uuid.UUID `json:"id"`
 	Username        string    `json:"username"`
+	ProfileImage    string    `json:"profileImage"`
+	Bio             string    `json:"bio"`
 	Email           string    `json:"email"`
 	Password        string    `json:"password"`
 	IsVerified      bool      `json:"isVerified"`
@@ -48,21 +50,6 @@ type LoginUserPayload struct {
 	Password string `json:"password" validate:"required,min=6,max=20"`
 }
 
-type ForgotPasswordPayload struct {
-	Email string `json:"email" validate:"required,email"`
-}
-
-type ResetForgotPasswordPayload struct {
-	Email       string `json:"email" validate:"required,email"`
-	OTP         string `json:"otp" validate:"required"`
-	NewPassword string `json:"newPassword" validate:"required, min=6, max=20"`
-}
-
-type ResetPasswordPayload struct {
-	CurrentPassword string `json:"currentPassword" validate:"required"`
-	NewPassword     string `json:"newPassword" validate:"required,min=6,max=20"`
-}
-
 type ResendOTPPayload struct {
 	Email string `json:"email" validate:"required,email"`
 }
@@ -72,6 +59,8 @@ type VerifyOTPPayload struct {
 	OTP   string `json:"otp" validate:"required"`
 }
 
-type UpdateProfilePayload struct {
-	Username string `json:"username" validate:"omitempty,min=2,max=20"`
+type OnboardingPayload struct {
+	ProfileImage string `json:"profileImage" validate:"required,url"`
+	Username     string `json:"username" validate:"required,min=2,max=20"`
+	Bio          string `json:"bio" validate:"required,max=225"`
 }

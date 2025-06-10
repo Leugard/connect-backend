@@ -107,14 +107,16 @@ func (s *Store) CreateUser(user types.User) error {
 
 func (s *Store) UpdateUser(user types.User) error {
 	_, err := s.db.Exec(`UPDATE users SET 
-			username = ?, 
+			username = ?,
+			profile_pic = ?,
+			bio = ?, 
 			email = ?, 
 			password = ?, 
 			is_verified = ?, 
 			verification_otp = ?, 
 			otp_exp = ?, 
 			updated_at = ?
-		WHERE id = ?`, user.Username, user.Email, user.Password, user.IsVerified, user.VerificationOTP, user.OTPExp, time.Now(), user.ID)
+		WHERE id = ?`, user.Username, user.ProfileImage, user.Bio, user.Email, user.Password, user.IsVerified, user.VerificationOTP, user.OTPExp, time.Now(), user.ID)
 	if err != nil {
 		return err
 	}
@@ -142,11 +144,14 @@ func (s *Store) SessionExists(id uuid.UUID) bool {
 }
 
 func scanRowIntoUser(rows *sql.Rows) (*types.User, error) {
-	user := new(types.User)
+	var user types.User
+	var profilePic, bio sql.NullString
 
 	err := rows.Scan(
 		&user.ID,
 		&user.Username,
+		&profilePic,
+		&bio,
 		&user.Email,
 		&user.Password,
 		&user.IsVerified,
@@ -159,5 +164,13 @@ func scanRowIntoUser(rows *sql.Rows) (*types.User, error) {
 		return nil, err
 	}
 
-	return user, nil
+	if profilePic.Valid {
+		user.ProfileImage = profilePic.String
+	}
+
+	if bio.Valid {
+		user.Bio = bio.String
+	}
+
+	return &user, nil
 }

@@ -7,7 +7,9 @@ import (
 	"strings"
 
 	"github.com/Leugard/connect-backend/service/auth"
+	"github.com/Leugard/connect-backend/types"
 	"github.com/Leugard/connect-backend/utils"
+	"github.com/google/uuid"
 )
 
 type contextKey string
@@ -33,4 +35,31 @@ func RequireAuth(next http.Handler) http.Handler {
 		ctx := context.WithValue(r.Context(), UserIDKey, userID)
 		next.ServeHTTP(w, r.WithContext(ctx))
 	})
+}
+
+func RequireVerified(getUserByID func(uuid.UUID) (*types.User, error)) func(http.Handler) http.Handler {
+	return func(next http.Handler) http.Handler {
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			userIDRaw := r.Context().Value(UserIDKey)
+			if userIDRaw == nil {
+				utils.WriteError(w, http.StatusUnauthorized, fmt.Errorf("unauthorized"))
+				return
+			}
+
+			userID, ok := userIDRaw.(string)
+			if !ok {
+				utils.WriteError(w, http.StatusForbidden, fmt.Errorf("invalid user ID"))
+				return
+			}
+
+			id, _ := uuid.Parse(userID)
+			user, err := getUserByID(id)
+			if err != nil || !user.IsVerified {
+				utils.WriteError(w, http.StatusForbidden, fmt.Errorf("account not verified"))
+				return
+			}
+
+			next.ServeHTTP(w, r)
+		})
+	}
 }
