@@ -18,6 +18,7 @@ type UserStore interface {
 	GetIncomingFriendRequests(userID uuid.UUID) ([]User, error)
 	GetOutgoingFriendRequests(userID uuid.UUID) ([]User, error)
 	GetFriends(userID uuid.UUID) ([]User, error)
+	GetBlockedUsers(userID uuid.UUID) ([]User, error)
 	CreateUser(User) error
 	CreateSession(session Session) error
 	CreateFriendRequest(senderID, receiverID uuid.UUID) error

@@ -219,6 +219,28 @@ func (s *Store) GetFriends(userID uuid.UUID) ([]types.User, error) {
 	return friends, nil
 }
 
+func (s *Store) GetBlockedUsers(userID uuid.UUID) ([]types.User, error) {
+	rows, err := s.db.Query(`SELECT u.id, u.username, u.email, u.profile_pic, u.friend_code
+	FROM blocked_users b JOIN users u ON b.blocked_id = u.id WHERE b.blocker_id = ?`, userID.String())
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var users []types.User
+	for rows.Next() {
+		var u types.User
+
+		err := rows.Scan(&u.ID, &u.Username, &u.Email, &u.ProfileImage, &u.FriendCode)
+		if err != nil {
+			return nil, err
+		}
+		users = append(users, u)
+	}
+
+	return users, nil
+}
+
 func (s *Store) CreateUser(user types.User) error {
 	_, err := s.db.Exec("INSERT INTO users (id, username, friend_code, email, password, is_verified, verification_otp, otp_exp, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)", user.ID, user.Username, user.FriendCode, user.Email, user.Password, user.IsVerified, user.VerificationOTP, user.OTPExp, user.CreatedAt, user.UpdatedAt)
 	if err != nil {

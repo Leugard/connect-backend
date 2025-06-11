@@ -44,6 +44,7 @@ func (h *Handler) RegisterRoutes(router *mux.Router) {
 	router.Handle("/friends", middleware.RequireAuth(middleware.RequireVerified(h.store.GetUserByID)(http.HandlerFunc(h.handleGetFriends)))).Methods("GET")
 	router.Handle("/block", middleware.RequireAuth(middleware.RequireVerified(h.store.GetUserByID)(http.HandlerFunc(h.handleBlockUser)))).Methods("POST")
 	router.Handle("/unblock", middleware.RequireAuth(middleware.RequireVerified(h.store.GetUserByID)(http.HandlerFunc(h.handleUnblockUser)))).Methods("POST")
+	router.Handle("/blocked", middleware.RequireAuth(middleware.RequireVerified(h.store.GetUserByID)(http.HandlerFunc(h.handleGetBlockedUsers)))).Methods("GET")
 
 }
 
@@ -901,4 +902,28 @@ func (h *Handler) handleUnblockUser(w http.ResponseWriter, r *http.Request) {
 	utils.WriteJSON(w, http.StatusOK, map[string]string{
 		"message": "user unblocked",
 	})
+}
+
+func (h *Handler) handleGetBlockedUsers(w http.ResponseWriter, r *http.Request) {
+	userID := r.Context().Value(middleware.UserIDKey).(string)
+	user, _ := uuid.Parse(userID)
+
+	users, err := h.store.GetBlockedUsers(user)
+	if err != nil {
+		utils.WriteError(w, http.StatusInternalServerError, fmt.Errorf("failed to get blocked users", err.Error()))
+		return
+	}
+
+	var result []map[string]any
+	for _, u := range users {
+		result = append(result, map[string]any{
+			"id":         u.ID,
+			"username":   u.Username,
+			"email":      u.Email,
+			"profilePic": u.ProfileImage,
+			"friendCode": u.FriendCode,
+		})
+	}
+
+	utils.WriteJSON(w, http.StatusOK, result)
 }
