@@ -15,6 +15,9 @@ type UserStore interface {
 	GetSessionByID(id uuid.UUID) (*Session, error)
 	GetUserByFriendCode(code string) (*User, error)
 	GetFriendRequestByID(requestID uuid.UUID) (*FriendRequest, error)
+	GetIncomingFriendRequests(userID uuid.UUID) ([]User, error)
+	GetOutgoingFriendRequests(userID uuid.UUID) ([]User, error)
+	GetFriends(userID uuid.UUID) ([]User, error)
 	CreateUser(User) error
 	CreateSession(session Session) error
 	CreateFriendRequest(senderID, receiverID uuid.UUID) error
@@ -28,6 +31,10 @@ type UserStore interface {
 	DeleteRefreshToken(token string) error
 	DeleteSessionByID(userID uuid.UUID, sessionID uuid.UUID) error
 	DeleteFriendRequest(requestID uuid.UUID) error
+	CancelFriendRequest(senderID, receiverID uuid.UUID) error
+	BlockUser(blockerID, blockedID uuid.UUID) error
+	UnblockUser(blockerID, blockedID uuid.UUID) error
+	IsBlocked(userA, userB uuid.UUID) (bool, error)
 }
 
 type RefreshToken struct {

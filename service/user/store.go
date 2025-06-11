@@ -155,6 +155,70 @@ func (s *Store) GetFriendRequestByID(requestID uuid.UUID) (*types.FriendRequest,
 	return &fr, err
 }
 
+func (s *Store) GetIncomingFriendRequests(userID uuid.UUID) ([]types.User, error) {
+	rows, err := s.db.Query(`SELECT u.id, u.username, u.email, u.profile_pic, u.friend_code FROM friend_requests fr JOIN users u ON fr.sender_id = u.id WHERE fr.receiver_id = ? AND fr.status = 'pending'`,
+		userID.String())
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var users []types.User
+	for rows.Next() {
+		var u types.User
+
+		err := rows.Scan(&u.ID, &u.Username, &u.Email, &u.ProfileImage, &u.FriendCode)
+		if err != nil {
+			return nil, err
+		}
+		users = append(users, u)
+	}
+	return users, nil
+}
+
+func (s *Store) GetOutgoingFriendRequests(userID uuid.UUID) ([]types.User, error) {
+	rows, err := s.db.Query(`SELECT u.id, u.username, u.email, u.profile_pic, u.friend_code FROM friend_requests fr JOIN users u ON fr.receiver_id = u.id WHERE fr.sender_id = ? AND fr.status = 'pending'`,
+		userID.String())
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var users []types.User
+	for rows.Next() {
+		var u types.User
+
+		err := rows.Scan(&u.ID, &u.Username, &u.Email, &u.ProfileImage, &u.FriendCode)
+		if err != nil {
+			return nil, err
+		}
+		users = append(users, u)
+	}
+	return users, nil
+}
+
+func (s *Store) GetFriends(userID uuid.UUID) ([]types.User, error) {
+	rows, err := s.db.Query(`SELECT u.id, u.username, u.email, u.profile_pic, u.friend_code FROM friends f JOIN users u ON f.friend_id = u.id WHERE f.user_id = ?`,
+		userID.String())
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var friends []types.User
+	for rows.Next() {
+		var u types.User
+
+		err := rows.Scan(&u.ID, &u.Username, &u.Email, &u.ProfileImage, &u.FriendCode)
+		if err != nil {
+			return nil, err
+		}
+		friends = append(friends, u)
+	}
+
+	return friends, nil
+}
+
 func (s *Store) CreateUser(user types.User) error {
 	_, err := s.db.Exec("INSERT INTO users (id, username, friend_code, email, password, is_verified, verification_otp, otp_exp, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)", user.ID, user.Username, user.FriendCode, user.Email, user.Password, user.IsVerified, user.VerificationOTP, user.OTPExp, user.CreatedAt, user.UpdatedAt)
 	if err != nil {
@@ -278,6 +342,36 @@ func (s *Store) DeleteFriendRequest(requestID uuid.UUID) error {
 	_, err := s.db.Exec(`DELETE FROM friend_requests WHERE id = ?`, requestID.String())
 
 	return err
+}
+
+func (s *Store) CancelFriendRequest(senderID, receiverID uuid.UUID) error {
+	_, err := s.db.Exec(`DELETE FROM friend_requests WHERE sender_id = ? AND receiver_id = ? AND status = 'pending'`,
+		senderID.String(), receiverID.String())
+
+	return err
+}
+
+func (s *Store) BlockUser(blockerID, blockedID uuid.UUID) error {
+	_, err := s.db.Exec(`INSERT IGNORE INTO blocked_users (blocker_id, blocked_id) VALUES (?, ?)`,
+		blockerID.String(), blockedID.String())
+
+	return err
+}
+
+func (s *Store) UnblockUser(blockerID, blockedID uuid.UUID) error {
+	_, err := s.db.Exec(`DELETE FROM blocked_users WHERE blocker_id = ? AND blocked_id = ?`,
+		blockerID.String(), blockedID.String())
+
+	return err
+}
+
+func (s *Store) IsBlocked(userA, userB uuid.UUID) (bool, error) {
+	var count int
+	err := s.db.QueryRow(`SELECT COUNT(*) FROM blocked_users
+	WHERE (blocker_id = ? AND blocked_id = ?) OR (blocker_id = ? AND blocked_id = ?)`,
+		userA.String(), userB.String(), userB.String(), userA.String()).Scan(&count)
+
+	return count > 0, err
 }
 
 func scanRowIntoUser(rows *sql.Rows) (*types.User, error) {

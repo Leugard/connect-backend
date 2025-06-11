@@ -28,16 +28,23 @@ func (h *Handler) RegisterRoutes(router *mux.Router) {
 	router.HandleFunc("/login", h.handleLogin).Methods("POST")
 	router.HandleFunc("/google", h.handleGoogleLogin).Methods("POST")
 	router.Handle("/logout", middleware.RequireAuth(http.HandlerFunc(h.handleLogout))).Methods("POST")
-	router.HandleFunc("/refresh-token", h.handleRefreshToken).Methods("POST")
 
+	router.HandleFunc("/refresh-token", h.handleRefreshToken).Methods("POST")
 	router.Handle("/verify-otp", middleware.RequireAuth(http.HandlerFunc(h.handleVerifyOTP))).Methods("POST")
 	router.Handle("/resend-otp", middleware.RequireAuth(http.HandlerFunc(h.handleResendOTP))).Methods("POST")
 	router.Handle("/onboarding", middleware.RequireAuth(http.HandlerFunc(h.handleOnboarding))).Methods("POST")
 	router.Handle("/sessions", middleware.RequireAuth(http.HandlerFunc(h.handleListSessions))).Methods("GET")
 	router.Handle("/sessions/{id}", middleware.RequireAuth(http.HandlerFunc(h.handleDeleteSession))).Methods("DELETE")
+
 	router.Handle("/me", middleware.RequireAuth(middleware.RequireVerified(h.store.GetUserByID)(http.HandlerFunc(h.handleProfile)))).Methods("GET")
 	router.Handle("/friend/request", middleware.RequireAuth(middleware.RequireVerified(h.store.GetUserByID)(http.HandlerFunc(h.handleSendFriendRequest)))).Methods("POST")
+	router.Handle("/friend/request", middleware.RequireAuth(middleware.RequireVerified(h.store.GetUserByID)(http.HandlerFunc(h.handleCancelFriendRequest)))).Methods("DELETE")
 	router.Handle("/friend/response", middleware.RequireAuth(middleware.RequireVerified(h.store.GetUserByID)(http.HandlerFunc(h.handleRespondToFriendRequest)))).Methods("POST")
+	router.Handle("/friends/requests", middleware.RequireAuth(middleware.RequireVerified(h.store.GetUserByID)(http.HandlerFunc(h.handleGetFriendRequests)))).Methods("GET")
+	router.Handle("/friends", middleware.RequireAuth(middleware.RequireVerified(h.store.GetUserByID)(http.HandlerFunc(h.handleGetFriends)))).Methods("GET")
+	router.Handle("/block", middleware.RequireAuth(middleware.RequireVerified(h.store.GetUserByID)(http.HandlerFunc(h.handleBlockUser)))).Methods("POST")
+	router.Handle("/unblock", middleware.RequireAuth(middleware.RequireVerified(h.store.GetUserByID)(http.HandlerFunc(h.handleUnblockUser)))).Methods("POST")
+
 }
 
 func (h *Handler) handleRegister(w http.ResponseWriter, r *http.Request) {
@@ -666,6 +673,17 @@ func (h *Handler) handleSendFriendRequest(w http.ResponseWriter, r *http.Request
 		return
 	}
 
+	isBlocked, err := h.store.IsBlocked(senderID, receiver.ID)
+	if err != nil {
+		utils.WriteError(w, http.StatusInternalServerError, fmt.Errorf("failed to check block status"))
+		return
+	}
+
+	if isBlocked {
+		utils.WriteError(w, 403, fmt.Errorf("cannot send request - one of you has blocked the other"))
+		return
+	}
+
 	utils.WriteJSON(w, http.StatusOK, map[string]string{
 		"message": "friend request sent",
 	})
@@ -724,5 +742,163 @@ func (h *Handler) handleRespondToFriendRequest(w http.ResponseWriter, r *http.Re
 
 	utils.WriteJSON(w, 200, map[string]string{
 		"message": fmt.Sprintf("friend request %s", status),
+	})
+}
+
+func (h *Handler) handleGetFriendRequests(w http.ResponseWriter, r *http.Request) {
+	userID := r.Context().Value(middleware.UserIDKey).(string)
+	user, _ := uuid.Parse(userID)
+
+	queryType := r.URL.Query().Get("type")
+
+	var users []types.User
+	var err error
+
+	if queryType == "outgoing" {
+		users, err = h.store.GetOutgoingFriendRequests(user)
+	} else {
+		users, err = h.store.GetIncomingFriendRequests(user)
+	}
+
+	if err != nil {
+		utils.WriteError(w, http.StatusInternalServerError, fmt.Errorf("failed to get friend requests"))
+		return
+	}
+
+	result := make([]map[string]any, 0)
+	for _, u := range users {
+		result = append(result, map[string]any{
+			"id":           u.ID,
+			"username":     u.Username,
+			"email":        u.Email,
+			"profileImage": u.ProfileImage,
+			"friendCode":   u.FriendCode,
+		})
+	}
+
+	utils.WriteJSON(w, http.StatusOK, result)
+}
+
+func (h *Handler) handleGetFriends(w http.ResponseWriter, r *http.Request) {
+	userID := r.Context().Value(middleware.UserIDKey).(string)
+	user, _ := uuid.Parse(userID)
+
+	friends, err := h.store.GetFriends(user)
+	if err != nil {
+		utils.WriteError(w, http.StatusInternalServerError, fmt.Errorf("failed to fetch friends"))
+		return
+	}
+
+	result := make([]map[string]any, 0)
+	for _, f := range friends {
+		result = append(result, map[string]any{
+			"id":           f.ID,
+			"username":     f.Username,
+			"email":        f.Email,
+			"profileImage": f.ProfileImage,
+			"friendCode":   f.FriendCode,
+		})
+	}
+
+	utils.WriteJSON(w, http.StatusOK, result)
+}
+
+func (h *Handler) handleCancelFriendRequest(w http.ResponseWriter, r *http.Request) {
+	var payload struct {
+		ReceiverID string `json:"receiverID" validate:"required"`
+	}
+
+	if err := utils.ParseJSON(r, &payload); err != nil {
+		utils.WriteError(w, http.StatusBadRequest, err)
+		return
+	}
+
+	senderID := r.Context().Value(middleware.UserIDKey).(string)
+	id, _ := uuid.Parse(senderID)
+	receiverID, err := uuid.Parse(payload.ReceiverID)
+	if err != nil {
+		utils.WriteError(w, http.StatusBadRequest, fmt.Errorf("invalid receiver ID"))
+		return
+	}
+
+	err = h.store.CancelFriendRequest(id, receiverID)
+	if err != nil {
+		utils.WriteError(w, http.StatusInternalServerError, err)
+		return
+	}
+
+	utils.WriteJSON(w, http.StatusOK, map[string]string{
+		"message": "Friend request canceled",
+	})
+}
+
+func (h *Handler) handleBlockUser(w http.ResponseWriter, r *http.Request) {
+	var payload struct {
+		UserID string `json:"userId" validate:"required"`
+	}
+
+	if err := utils.ParseJSON(r, &payload); err != nil {
+		utils.WriteError(w, http.StatusBadRequest, err)
+		return
+	}
+
+	blockerID := r.Context().Value(middleware.UserIDKey).(string)
+	blocker, _ := uuid.Parse(blockerID)
+	blocked, err := uuid.Parse(payload.UserID)
+	if err != nil {
+		utils.WriteError(w, http.StatusBadRequest, fmt.Errorf("invalid user ID"))
+		return
+	}
+
+	if blocked == blocker {
+		utils.WriteError(w, http.StatusBadRequest, fmt.Errorf("cannot block yourself"))
+		return
+	}
+
+	err = h.store.BlockUser(blocker, blocked)
+	if err != nil {
+		utils.WriteError(w, http.StatusInternalServerError, err)
+		return
+	}
+
+	_ = h.store.CancelFriendRequest(blocked, blocker)
+	_ = h.store.CancelFriendRequest(blocker, blocked)
+
+	utils.WriteJSON(w, http.StatusOK, map[string]string{
+		"message": "user blocked",
+	})
+}
+
+func (h *Handler) handleUnblockUser(w http.ResponseWriter, r *http.Request) {
+	var payload struct {
+		UserID string `json:"userId" validate:"required"`
+	}
+
+	if err := utils.ParseJSON(r, &payload); err != nil {
+		utils.WriteError(w, http.StatusBadRequest, err)
+		return
+	}
+
+	blockerID := r.Context().Value(middleware.UserIDKey).(string)
+	blocker, _ := uuid.Parse(blockerID)
+	blocked, err := uuid.Parse(payload.UserID)
+	if err != nil {
+		utils.WriteError(w, http.StatusBadRequest, fmt.Errorf("invalid user ID"))
+		return
+	}
+
+	if blocked == blocker {
+		utils.WriteError(w, http.StatusBadRequest, fmt.Errorf("cannot block yourself"))
+		return
+	}
+
+	err = h.store.UnblockUser(blocker, blocked)
+	if err != nil {
+		utils.WriteError(w, http.StatusInternalServerError, err)
+		return
+	}
+
+	utils.WriteJSON(w, http.StatusOK, map[string]string{
+		"message": "user unblocked",
 	})
 }
