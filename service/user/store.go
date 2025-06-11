@@ -3,9 +3,11 @@ package user
 import (
 	"database/sql"
 	"fmt"
+	"log"
 	"time"
 
 	"github.com/Leugard/connect-backend/types"
+	"github.com/Leugard/connect-backend/utils"
 	"github.com/google/uuid"
 )
 
@@ -126,8 +128,35 @@ func (s *Store) GetSessionByID(id uuid.UUID) (*types.Session, error) {
 	return &ses, nil
 }
 
+func (s *Store) GetUserByFriendCode(code string) (*types.User, error) {
+	row := s.db.QueryRow(`SELECT id, friend_code, email, username, is_verified FROM users WHERE friend_code = ?`, code)
+
+	var u types.User
+	err := row.Scan(&u.ID, &u.FriendCode, &u.Email, &u.Username, &u.IsVerified)
+	if err != nil {
+		return nil, err
+	}
+	return &u, nil
+}
+
+func (s *Store) GetFriendRequestByID(requestID uuid.UUID) (*types.FriendRequest, error) {
+	row := s.db.QueryRow(`SELECT id, sender_id, receiver_id, status FROM friend_requests WHERE id = ?`, requestID.String())
+
+	var fr types.FriendRequest
+	var senderID, receiverID string
+
+	err := row.Scan(&fr.ID, &senderID, &receiverID, &fr.Status)
+	if err != nil {
+		return nil, err
+	}
+
+	fr.SenderID, _ = uuid.Parse(senderID)
+	fr.ReceiverID, _ = uuid.Parse(receiverID)
+	return &fr, err
+}
+
 func (s *Store) CreateUser(user types.User) error {
-	_, err := s.db.Exec("INSERT INTO users (id, username, email, password, is_verified, verification_otp, otp_exp, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)", user.ID, user.Username, user.Email, user.Password, user.IsVerified, user.VerificationOTP, user.OTPExp, user.CreatedAt, user.UpdatedAt)
+	_, err := s.db.Exec("INSERT INTO users (id, username, friend_code, email, password, is_verified, verification_otp, otp_exp, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)", user.ID, user.Username, user.FriendCode, user.Email, user.Password, user.IsVerified, user.VerificationOTP, user.OTPExp, user.CreatedAt, user.UpdatedAt)
 	if err != nil {
 		return err
 	}
@@ -140,6 +169,66 @@ func (s *Store) CreateSession(session types.Session) error {
 		session.ID.String(), session.UserID.String(), session.DeviceID, session.IpAddress, session.UserAgent, session.RefreshToken, session.CreatedAt)
 
 	return err
+}
+
+func (s *Store) CreateFriendRequest(senderID, receiverID uuid.UUID) error {
+	_, err := s.db.Exec(`INSERT INTO friend_requests (id, sender_id, receiver_id, status) VALUES (?, ?, ?, 'pending')`,
+		uuid.New().String(), senderID.String(), receiverID.String())
+
+	return err
+}
+
+func (s *Store) GenerateFriendCode() (string, error) {
+	for i := 0; i < 10; i++ {
+		code := utils.GenerateFriendCode(5)
+		exists, err := s.FriendCodeExists(code)
+		if err != nil {
+			return "", err
+		}
+
+		if !exists {
+			return code, nil
+		}
+
+		log.Printf("code: ", code)
+	}
+
+	return "", fmt.Errorf("failed to generate friend code after 10 tries")
+}
+
+func (s *Store) CreateFriendship(user1, user2 uuid.UUID) error {
+	tx, err := s.db.Begin()
+	if err != nil {
+		return err
+	}
+
+	_, err = tx.Exec(`INSERT INTO friends (user_id, friend_id) VALUES (?, ?)`, user1.String(), user2.String())
+	if err != nil {
+		tx.Rollback()
+		return err
+	}
+
+	_, err = tx.Exec(`INSERT INTO friends (user_id, friend_id) VALUES (?, ?)`, user2.String(), user1.String())
+	if err != nil {
+		tx.Rollback()
+		return err
+	}
+
+	return tx.Commit()
+}
+
+func (s *Store) FriendCodeExists(code string) (bool, error) {
+	var count int
+	err := s.db.QueryRow(`SELECT COUNT(*) FROM users WHERE friend_code = ?`, code).Scan(&count)
+
+	return count > 0, err
+}
+
+func (s *Store) FriendRequestExists(senderID, receiverID uuid.UUID) (bool, error) {
+	var count int
+	err := s.db.QueryRow(`SELECT COUNT(*) FROM friend_requests WHERE sender_id = ? AND receiver_id = ?`, senderID.String(), receiverID.String()).Scan(&count)
+
+	return count > 0, err
 }
 
 func (s *Store) UpdateUser(user types.User) error {
@@ -185,6 +274,12 @@ func (s *Store) DeleteSessionByID(userID uuid.UUID, sessionID uuid.UUID) error {
 	return err
 }
 
+func (s *Store) DeleteFriendRequest(requestID uuid.UUID) error {
+	_, err := s.db.Exec(`DELETE FROM friend_requests WHERE id = ?`, requestID.String())
+
+	return err
+}
+
 func scanRowIntoUser(rows *sql.Rows) (*types.User, error) {
 	var user types.User
 	var profilePic, bio sql.NullString
@@ -192,6 +287,7 @@ func scanRowIntoUser(rows *sql.Rows) (*types.User, error) {
 	err := rows.Scan(
 		&user.ID,
 		&user.Username,
+		&user.FriendCode,
 		&profilePic,
 		&bio,
 		&user.Email,

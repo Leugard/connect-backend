@@ -5,12 +5,17 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"math/rand"
 	"net/http"
+	"strings"
+	"time"
 
 	"github.com/go-playground/validator"
 )
 
 var Validate = validator.New()
+
+const friendCodeChars = "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789"
 
 func ParseJSON(r *http.Request, payload any) error {
 	if r.Body == nil {
@@ -34,4 +39,14 @@ func HashDeviceInfo(ip, userAgent string) string {
 	data := ip + ":" + userAgent
 	hash := sha256.Sum256([]byte(data))
 	return hex.EncodeToString(hash[:])
+}
+
+func GenerateFriendCode(length int) string {
+	rand.Seed(time.Now().UnixNano())
+
+	var sb strings.Builder
+	for i := 0; i < length; i++ {
+		sb.WriteByte(friendCodeChars[rand.Intn(len(friendCodeChars))])
+	}
+	return sb.String()
 }

@@ -2,6 +2,7 @@ package user
 
 import (
 	"fmt"
+	"log"
 	"net/http"
 	"time"
 
@@ -35,6 +36,8 @@ func (h *Handler) RegisterRoutes(router *mux.Router) {
 	router.Handle("/sessions", middleware.RequireAuth(http.HandlerFunc(h.handleListSessions))).Methods("GET")
 	router.Handle("/sessions/{id}", middleware.RequireAuth(http.HandlerFunc(h.handleDeleteSession))).Methods("DELETE")
 	router.Handle("/me", middleware.RequireAuth(middleware.RequireVerified(h.store.GetUserByID)(http.HandlerFunc(h.handleProfile)))).Methods("GET")
+	router.Handle("/friend/request", middleware.RequireAuth(middleware.RequireVerified(h.store.GetUserByID)(http.HandlerFunc(h.handleSendFriendRequest)))).Methods("POST")
+	router.Handle("/friend/response", middleware.RequireAuth(middleware.RequireVerified(h.store.GetUserByID)(http.HandlerFunc(h.handleRespondToFriendRequest)))).Methods("POST")
 }
 
 func (h *Handler) handleRegister(w http.ResponseWriter, r *http.Request) {
@@ -68,10 +71,17 @@ func (h *Handler) handleRegister(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	friendCode, err := h.store.GenerateFriendCode()
+	if err != nil {
+		utils.WriteError(w, http.StatusInternalServerError, fmt.Errorf("failed to generate friend code"))
+		return
+	}
+
 	// create the user
 	user := types.User{
 		ID:              uuid.New(),
 		Username:        payload.Username,
+		FriendCode:      friendCode,
 		Email:           payload.Email,
 		Password:        hashedPassword,
 		IsVerified:      false,
@@ -230,12 +240,20 @@ func (h *Handler) handleGoogleLogin(w http.ResponseWriter, r *http.Request) {
 	name, _ := gPayload.Claims["name"].(string)
 	picture, _ := gPayload.Claims["picture"].(string)
 
+	friendCode, err := h.store.GenerateFriendCode()
+	if err != nil {
+		utils.WriteError(w, http.StatusInternalServerError, fmt.Errorf("failed to generate friend code"))
+		return
+	}
+	log.Printf(friendCode)
+
 	user, err := h.store.GetUserByEmail(email)
 	if err != nil {
 		user = &types.User{
 			ID:           uuid.New(),
 			Email:        email,
 			Username:     name,
+			FriendCode:   friendCode,
 			IsVerified:   false,
 			ProfileImage: picture,
 			CreatedAt:    time.Now(),
@@ -482,7 +500,7 @@ func (h *Handler) handleOnboarding(w http.ResponseWriter, r *http.Request) {
 	id, _ := uuid.Parse(userID)
 	user, err := h.store.GetUserByID(id)
 	if err != nil {
-		utils.WriteError(w, http.StatusNotFound, fmt.Errorf("user not found"))
+		utils.WriteError(w, http.StatusNotFound, fmt.Errorf("user not found", err.Error()))
 		return
 	}
 
@@ -596,4 +614,115 @@ func (h *Handler) handleProfile(w http.ResponseWriter, r *http.Request) {
 		"createdAt":    user.CreatedAt,
 	})
 
+}
+
+func (h *Handler) handleSendFriendRequest(w http.ResponseWriter, r *http.Request) {
+	var payload struct {
+		FriendCode string `json:"friendCode" validate:"required"`
+	}
+
+	if err := utils.ParseJSON(r, &payload); err != nil {
+		utils.WriteError(w, http.StatusBadRequest, fmt.Errorf(err.Error()))
+	}
+
+	if err := utils.Validate.Struct(payload); err != nil {
+		utils.WriteError(w, http.StatusBadRequest, fmt.Errorf("invalid input", err.Error()))
+		return
+	}
+
+	sender, _ := r.Context().Value(middleware.UserIDKey).(string)
+	senderID, _ := uuid.Parse(sender)
+
+	receiver, err := h.store.GetUserByFriendCode(payload.FriendCode)
+	if err != nil {
+		utils.WriteError(w, http.StatusBadRequest, fmt.Errorf("user not found", err.Error()))
+		return
+	}
+
+	if receiver.ID == senderID {
+		utils.WriteError(w, http.StatusBadRequest, fmt.Errorf("cannot sent friend request to yourself"))
+		return
+	}
+
+	if !receiver.IsVerified {
+		utils.WriteError(w, http.StatusBadRequest, fmt.Errorf("cannot sent request to unverified user"))
+		return
+	}
+
+	exists, err := h.store.FriendRequestExists(senderID, receiver.ID)
+	if err != nil {
+		utils.WriteError(w, http.StatusInternalServerError, err)
+		return
+	}
+
+	if exists {
+		utils.WriteError(w, 409, fmt.Errorf("friend request already sent"))
+		return
+	}
+
+	err = h.store.CreateFriendRequest(senderID, receiver.ID)
+	if err != nil {
+		utils.WriteError(w, http.StatusInternalServerError, err)
+		return
+	}
+
+	utils.WriteJSON(w, http.StatusOK, map[string]string{
+		"message": "friend request sent",
+	})
+}
+
+func (h *Handler) handleRespondToFriendRequest(w http.ResponseWriter, r *http.Request) {
+	var payload struct {
+		RequestID string `json:"requestId" validate:"required"`
+		Accept    bool   `json:"accept"`
+	}
+
+	if err := utils.ParseJSON(r, &payload); err != nil {
+		utils.WriteError(w, http.StatusBadRequest, fmt.Errorf(err.Error()))
+		return
+	}
+
+	if err := utils.Validate.Struct(payload); err != nil {
+		utils.WriteError(w, http.StatusBadRequest, fmt.Errorf("invalid input", err.Error()))
+		return
+	}
+
+	requestID, err := uuid.Parse(payload.RequestID)
+	if err != nil {
+		utils.WriteError(w, http.StatusBadRequest, fmt.Errorf("invalid request ID"))
+		return
+	}
+
+	userID := r.Context().Value(middleware.UserIDKey).(string)
+	user, _ := uuid.Parse(userID)
+
+	fr, err := h.store.GetFriendRequestByID(requestID)
+	if err != nil {
+		utils.WriteError(w, 404, fmt.Errorf("friend request not found"))
+		return
+	}
+
+	if fr.ReceiverID != user {
+		utils.WriteError(w, 403, fmt.Errorf("you are not authorized to respond to this request"))
+		return
+	}
+
+	status := "rejected"
+	if payload.Accept {
+		if err := h.store.CreateFriendship(fr.SenderID, fr.ReceiverID); err != nil {
+			utils.WriteError(w, http.StatusInternalServerError, fmt.Errorf("failed to create friendship", err.Error()))
+			return
+		}
+		status = "accepted"
+	}
+
+	err = h.store.DeleteFriendRequest(requestID)
+	if err != nil {
+		utils.WriteError(w, http.StatusInternalServerError, fmt.Errorf("failed to delete friend request"))
+		return
+	}
+
+	utils.WriteJSON(w, 200, map[string]string{
+		"message": fmt.Sprintf("friend request %s", status),
+	})
 }

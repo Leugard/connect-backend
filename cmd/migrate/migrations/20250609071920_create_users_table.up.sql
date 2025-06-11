@@ -1,5 +1,6 @@
 CREATE TABLE IF NOT EXISTS users (
     id CHAR(36) PRIMARY KEY DEFAULT(UUID()),
+    friend_code VARCHAR(5) UNIQUE,
     username VARCHAR(20) DEFAULT NULL,
     profile_pic TEXT DEFAULT NULL,
     bio VARCHAR(255) DEFAULT NULL,
