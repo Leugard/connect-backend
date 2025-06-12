@@ -8,6 +8,7 @@ import (
 
 	"github.com/Leugard/connect-backend/middleware"
 	"github.com/Leugard/connect-backend/service/auth"
+	"github.com/Leugard/connect-backend/service/websocket"
 	"github.com/Leugard/connect-backend/types"
 	"github.com/Leugard/connect-backend/utils"
 	"github.com/google/uuid"
@@ -24,6 +25,12 @@ func NewHandler(store types.UserStore) *Handler {
 }
 
 func (h *Handler) RegisterRoutes(router *mux.Router) {
+	wsHandler := &websocket.Handler{
+		Store:   h.store,
+		Manager: websocket.NewManager(),
+	}
+	router.Handle("/ws", middleware.RequireAuth(middleware.RequireVerified(h.store.GetUserByID)(http.HandlerFunc(wsHandler.HandleWebSocket))))
+
 	router.HandleFunc("/register", h.handleRegister).Methods("POST")
 	router.HandleFunc("/login", h.handleLogin).Methods("POST")
 	router.HandleFunc("/google", h.handleGoogleLogin).Methods("POST")
@@ -45,6 +52,8 @@ func (h *Handler) RegisterRoutes(router *mux.Router) {
 	router.Handle("/block", middleware.RequireAuth(middleware.RequireVerified(h.store.GetUserByID)(http.HandlerFunc(h.handleBlockUser)))).Methods("POST")
 	router.Handle("/unblock", middleware.RequireAuth(middleware.RequireVerified(h.store.GetUserByID)(http.HandlerFunc(h.handleUnblockUser)))).Methods("POST")
 	router.Handle("/blocked", middleware.RequireAuth(middleware.RequireVerified(h.store.GetUserByID)(http.HandlerFunc(h.handleGetBlockedUsers)))).Methods("GET")
+	router.Handle("/messages/send", middleware.RequireAuth(middleware.RequireVerified(h.store.GetUserByID)(http.HandlerFunc(h.handleSendMessage)))).Methods("POST")
+	router.Handle("/messages/{conversationId}", middleware.RequireAuth(middleware.RequireVerified(h.store.GetUserByID)(http.HandlerFunc(h.handleGetMessages)))).Methods("GET")
 
 }
 
@@ -926,4 +935,84 @@ func (h *Handler) handleGetBlockedUsers(w http.ResponseWriter, r *http.Request) 
 	}
 
 	utils.WriteJSON(w, http.StatusOK, result)
+}
+
+func (h *Handler) handleSendMessage(w http.ResponseWriter, r *http.Request) {
+	var payload struct {
+		ReceiverID string `json:"receiverId" validate:"required"`
+		Content    string `json:"content"`
+		ImageURL   string `json:"imageUrl"`
+	}
+
+	if err := utils.ParseJSON(r, &payload); err != nil {
+		utils.WriteError(w, http.StatusBadRequest, err)
+		return
+	}
+
+	if err := utils.Validate.Struct(payload); err != nil {
+		utils.WriteError(w, http.StatusBadRequest, fmt.Errorf("invalid input"))
+		return
+	}
+
+	if payload.Content == "" && payload.ImageURL == "" {
+		utils.WriteError(w, http.StatusBadRequest, fmt.Errorf("message must have content or image"))
+		return
+	}
+
+	senderID, _ := r.Context().Value(middleware.UserIDKey).(string)
+	sender, _ := uuid.Parse(senderID)
+	receiverID, err := uuid.Parse(payload.ReceiverID)
+	if err != nil {
+		utils.WriteError(w, http.StatusBadRequest, fmt.Errorf("invalid receiver ID"))
+		return
+	}
+
+	isFriend, err := h.store.AreFriends(sender, receiverID)
+	if err != nil || !isFriend {
+		utils.WriteError(w, 403, fmt.Errorf("you can only message friends"))
+		return
+	}
+
+	convoID, err := h.store.GetOrCreateConversation(sender, receiverID)
+	if err != nil {
+		utils.WriteError(w, http.StatusInternalServerError, fmt.Errorf("failed to get/create conversations", err.Error()))
+		return
+	}
+
+	err = h.store.SendMessage(convoID, sender, payload.Content, payload.ImageURL)
+	if err != nil {
+		utils.WriteError(w, http.StatusInternalServerError, fmt.Errorf("failed to send message"))
+		return
+	}
+
+	utils.WriteJSON(w, http.StatusOK, map[string]string{
+		"message": "message sent",
+	})
+}
+
+func (h *Handler) handleGetMessages(w http.ResponseWriter, r *http.Request) {
+	vars := mux.Vars(r)
+	convoID := vars["conversationId"]
+	convo, err := uuid.Parse(convoID)
+	if err != nil {
+		utils.WriteError(w, http.StatusBadRequest, fmt.Errorf("invalid conversation ID"))
+		return
+	}
+
+	userID := r.Context().Value(middleware.UserIDKey).(string)
+	user, _ := uuid.Parse(userID)
+
+	isParticipant, err := h.store.IsParticipant(user, convo)
+	if err != nil || !isParticipant {
+		utils.WriteError(w, 403, fmt.Errorf("not part of this conversation"))
+		return
+	}
+
+	messages, err := h.store.GetMessagesByConversation(convo)
+	if err != nil {
+		utils.WriteError(w, http.StatusInternalServerError, fmt.Errorf("failed to fetch messages", err.Error()))
+		return
+	}
+
+	utils.WriteJSON(w, http.StatusOK, messages)
 }

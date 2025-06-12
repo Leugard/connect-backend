@@ -19,6 +19,8 @@ type UserStore interface {
 	GetOutgoingFriendRequests(userID uuid.UUID) ([]User, error)
 	GetFriends(userID uuid.UUID) ([]User, error)
 	GetBlockedUsers(userID uuid.UUID) ([]User, error)
+	GetMessagesByConversation(convoID uuid.UUID) ([]Message, error)
+	GetOrCreateConversation(user1, user2 uuid.UUID) (uuid.UUID, error)
 	CreateUser(User) error
 	CreateSession(session Session) error
 	CreateFriendRequest(senderID, receiverID uuid.UUID) error
@@ -36,6 +38,9 @@ type UserStore interface {
 	BlockUser(blockerID, blockedID uuid.UUID) error
 	UnblockUser(blockerID, blockedID uuid.UUID) error
 	IsBlocked(userA, userB uuid.UUID) (bool, error)
+	SendMessage(conversationID, senderID uuid.UUID, content, imageURL string) error
+	AreFriends(user1, user2 uuid.UUID) (bool, error)
+	IsParticipant(userID, convoID uuid.UUID) (bool, error)
 }
 
 type RefreshToken struct {
@@ -76,6 +81,15 @@ type User struct {
 	OTPExp          time.Time `json:"-"`
 	CreatedAt       time.Time `json:"createdAt"`
 	UpdatedAt       time.Time `json:"updatedAt"`
+}
+
+type Message struct {
+	ID             uuid.UUID `json:"id"`
+	ConversationID uuid.UUID `json:"conversationId"`
+	SenderID       uuid.UUID `json:"senderId"`
+	Content        string    `json:"content"`
+	ImageURL       string    `json:"imageUrl"`
+	CreatedAt      time.Time `json:"createdAt"`
 }
 
 type RegisterUserPayload struct {

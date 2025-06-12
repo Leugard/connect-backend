@@ -241,6 +241,58 @@ func (s *Store) GetBlockedUsers(userID uuid.UUID) ([]types.User, error) {
 	return users, nil
 }
 
+func (s *Store) GetMessagesByConversation(convoID uuid.UUID) ([]types.Message, error) {
+	rows, err := s.db.Query(`SELECT id, sender_id, content, image_url, created_at
+	FROM messages WHERE conversation_id = ? ORDER by created_at ASC`, convoID.String())
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var messages []types.Message
+	for rows.Next() {
+		var m types.Message
+
+		err := rows.Scan(&m.ID, &m.SenderID, &m.Content, &m.ImageURL, &m.CreatedAt)
+		if err != nil {
+			return nil, err
+		}
+		m.ConversationID = convoID
+		messages = append(messages, m)
+	}
+
+	return messages, nil
+}
+
+func (s *Store) GetOrCreateConversation(user1, user2 uuid.UUID) (uuid.UUID, error) {
+	row := s.db.QueryRow(`SELECT cp1.conversation_id
+	FROM conversation_participants cp1
+	JOIN conversation_participants cp2
+	ON cp1.conversation_id = cp2.conversation_id
+	WHERE cp1.user_id = ? AND cp2.user_id = ?`, user1.String(), user2.String())
+
+	var convoID string
+	err := row.Scan(&convoID)
+	if err == sql.ErrNoRows {
+		newID := uuid.New().String()
+		_, err = s.db.Exec(`INSERT INTO conversations (id) VALUES (?)`, newID)
+		if err != nil {
+			return uuid.Nil, err
+		}
+
+		_, err := s.db.Exec(`INSERT INTO conversation_participants (conversation_id, user_id) VALUES (?, ?), (?, ?)`,
+			newID, user1.String(), newID, user2.String())
+		if err != nil {
+			return uuid.Nil, err
+		}
+		return uuid.MustParse(newID), nil
+	} else if err != nil {
+		return uuid.Nil, err
+	}
+
+	return uuid.MustParse(convoID), nil
+}
+
 func (s *Store) CreateUser(user types.User) error {
 	_, err := s.db.Exec("INSERT INTO users (id, username, friend_code, email, password, is_verified, verification_otp, otp_exp, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)", user.ID, user.Username, user.FriendCode, user.Email, user.Password, user.IsVerified, user.VerificationOTP, user.OTPExp, user.CreatedAt, user.UpdatedAt)
 	if err != nil {
@@ -392,6 +444,28 @@ func (s *Store) IsBlocked(userA, userB uuid.UUID) (bool, error) {
 	err := s.db.QueryRow(`SELECT COUNT(*) FROM blocked_users
 	WHERE (blocker_id = ? AND blocked_id = ?) OR (blocker_id = ? AND blocked_id = ?)`,
 		userA.String(), userB.String(), userB.String(), userA.String()).Scan(&count)
+
+	return count > 0, err
+}
+
+func (s *Store) SendMessage(conversationID, senderID uuid.UUID, content, imageURL string) error {
+	_, err := s.db.Exec(`INSERT INTO messages (id, conversation_id, sender_id, content, image_url) VALUES (?, ?, ?, ?, ?)`,
+		uuid.New().String(), conversationID.String(), senderID.String(), content, imageURL)
+
+	return err
+}
+
+func (s *Store) AreFriends(user1, user2 uuid.UUID) (bool, error) {
+	var count int
+	err := s.db.QueryRow(`SELECT COUNT(*) FROM friends WHERE user_id = ? AND friend_id = ?`, user1.String(), user2.String()).Scan(&count)
+
+	return count > 0, err
+}
+
+func (s *Store) IsParticipant(userID, convoID uuid.UUID) (bool, error) {
+	var count int
+	err := s.db.QueryRow(`SELECT COUNT(*) FROM conversation_participants
+	WHERE conversation_id = ? AND user_id = ?`, convoID.String(), userID.String()).Scan(&count)
 
 	return count > 0, err
 }
