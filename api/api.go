@@ -4,7 +4,9 @@ import (
 	"database/sql"
 	"log"
 	"net/http"
+	"os"
 
+	"github.com/Leugard/connect-backend/service/upload"
 	"github.com/Leugard/connect-backend/service/user"
 	"github.com/gorilla/mux"
 )
@@ -26,7 +28,14 @@ func (s *APIServer) Run() error {
 	subrouter := router.PathPrefix("/api/v1").Subrouter()
 
 	userStore := user.NewStore(s.db)
-	userHandler := user.NewHandler(userStore)
+	cloudName := os.Getenv("CLOUDINARY_CLOUD_NAME")
+	apiKey := os.Getenv("CLOUDINARY_API_KEY")
+	apiSecret := os.Getenv("CLOUDINARY_API_SECRET")
+	uploadStore, err := upload.NewCloudinaryService(cloudName, apiKey, apiSecret)
+	if err != nil {
+		log.Fatalf("failed to initialize Cloudinary service: %v", err)
+	}
+	userHandler := user.NewHandler(userStore, uploadStore)
 	userHandler.RegisterRoutes(subrouter)
 
 	router.HandleFunc("/health", func(w http.ResponseWriter, r *http.Request) {

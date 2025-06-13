@@ -24,15 +24,30 @@ func ParseJSON(r *http.Request, payload any) error {
 	return json.NewDecoder(r.Body).Decode(payload)
 }
 
-func WriteJSON(w http.ResponseWriter, status int, v any) error {
+func WriteJSON(w http.ResponseWriter, status int, payload any) error {
 	w.Header().Add("Content-Type", "application/json")
 	w.WriteHeader(status)
 
-	return json.NewEncoder(w).Encode(v)
+	var wrapped map[string]any
+
+	switch status {
+	case http.StatusOK, http.StatusCreated:
+		wrapped = map[string]any{
+			"status": "success",
+			"data":   payload,
+		}
+	default:
+		wrapped = map[string]any{
+			"status":  "error",
+			"message": payload,
+		}
+	}
+
+	return json.NewEncoder(w).Encode(wrapped)
 }
 
 func WriteError(w http.ResponseWriter, status int, err error) {
-	WriteJSON(w, status, map[string]any{"success": false, "error": err.Error()})
+	WriteJSON(w, status, err.Error())
 }
 
 func HashDeviceInfo(ip, userAgent string) string {

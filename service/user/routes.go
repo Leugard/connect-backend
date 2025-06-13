@@ -17,11 +17,12 @@ import (
 )
 
 type Handler struct {
-	store types.UserStore
+	store  types.UserStore
+	upload types.UploadStore
 }
 
-func NewHandler(store types.UserStore) *Handler {
-	return &Handler{store: store}
+func NewHandler(store types.UserStore, upload types.UploadStore) *Handler {
+	return &Handler{store: store, upload: upload}
 }
 
 func (h *Handler) RegisterRoutes(router *mux.Router) {
@@ -43,7 +44,7 @@ func (h *Handler) RegisterRoutes(router *mux.Router) {
 	router.Handle("/sessions", middleware.RequireAuth(http.HandlerFunc(h.handleListSessions))).Methods("GET")
 	router.Handle("/sessions/{id}", middleware.RequireAuth(http.HandlerFunc(h.handleDeleteSession))).Methods("DELETE")
 
-	router.Handle("/me", middleware.RequireAuth(middleware.RequireVerified(h.store.GetUserByID)(http.HandlerFunc(h.handleProfile)))).Methods("GET")
+	router.Handle("/me", middleware.RequireAuth(http.HandlerFunc(h.handleProfile))).Methods("GET")
 	router.Handle("/friend/request", middleware.RequireAuth(middleware.RequireVerified(h.store.GetUserByID)(http.HandlerFunc(h.handleSendFriendRequest)))).Methods("POST")
 	router.Handle("/friend/request", middleware.RequireAuth(middleware.RequireVerified(h.store.GetUserByID)(http.HandlerFunc(h.handleCancelFriendRequest)))).Methods("DELETE")
 	router.Handle("/friend/response", middleware.RequireAuth(middleware.RequireVerified(h.store.GetUserByID)(http.HandlerFunc(h.handleRespondToFriendRequest)))).Methods("POST")
@@ -52,8 +53,14 @@ func (h *Handler) RegisterRoutes(router *mux.Router) {
 	router.Handle("/block", middleware.RequireAuth(middleware.RequireVerified(h.store.GetUserByID)(http.HandlerFunc(h.handleBlockUser)))).Methods("POST")
 	router.Handle("/unblock", middleware.RequireAuth(middleware.RequireVerified(h.store.GetUserByID)(http.HandlerFunc(h.handleUnblockUser)))).Methods("POST")
 	router.Handle("/blocked", middleware.RequireAuth(middleware.RequireVerified(h.store.GetUserByID)(http.HandlerFunc(h.handleGetBlockedUsers)))).Methods("GET")
-	router.Handle("/messages/send", middleware.RequireAuth(middleware.RequireVerified(h.store.GetUserByID)(http.HandlerFunc(h.handleSendMessage)))).Methods("POST")
 	router.Handle("/messages/{conversationId}", middleware.RequireAuth(middleware.RequireVerified(h.store.GetUserByID)(http.HandlerFunc(h.handleGetMessages)))).Methods("GET")
+	router.Handle("/conversations", middleware.RequireAuth(middleware.RequireVerified(h.store.GetUserByID)(http.HandlerFunc(h.handleGetConversations)))).Methods("GET")
+
+	router.Handle("/upload/image", middleware.RequireAuth(middleware.RequireVerified(h.store.GetUserByID)(http.HandlerFunc(h.handleUploadImage)))).Methods("POST")
+	router.Handle("/story", middleware.RequireAuth(middleware.RequireVerified(h.store.GetUserByID)(http.HandlerFunc(h.handlePostStory)))).Methods("POST")
+	router.Handle("/stories", middleware.RequireAuth(middleware.RequireVerified(h.store.GetUserByID)(http.HandlerFunc(h.handleGetStories)))).Methods("GET")
+	router.Handle("/story/view/{storyId}", middleware.RequireAuth(middleware.RequireVerified(h.store.GetUserByID)(http.HandlerFunc(h.handleMarkStoryViewed)))).Methods("POST")
+	router.Handle("/story/viewers/{storyId}", middleware.RequireAuth(middleware.RequireVerified(h.store.GetUserByID)(http.HandlerFunc(h.handleGetStoryViewers)))).Methods("GET")
 
 }
 
@@ -61,11 +68,14 @@ func (h *Handler) handleRegister(w http.ResponseWriter, r *http.Request) {
 	var payload types.RegisterUserPayload
 	if err := utils.ParseJSON(r, &payload); err != nil {
 		utils.WriteError(w, http.StatusBadRequest, err)
+		log.Printf("Kontol:, %e", err.Error())
+		return
 	}
 
 	// validate payload
 	if err := utils.Validate.Struct(payload); err != nil {
 		utils.WriteError(w, http.StatusBadRequest, fmt.Errorf("invalid payload"))
+		log.Printf("Kontol:, %e", err.Error())
 		return
 	}
 
@@ -79,18 +89,21 @@ func (h *Handler) handleRegister(w http.ResponseWriter, r *http.Request) {
 	hashedPassword, err := auth.HashedPassword(payload.Password)
 	if err != nil {
 		utils.WriteError(w, http.StatusInternalServerError, err)
+		log.Printf("Kontol:, %e", err.Error())
 		return
 	}
 
 	otp, err := utils.GenerateOTP()
 	if err != nil {
 		utils.WriteError(w, http.StatusInternalServerError, fmt.Errorf("failed to generate OTP"))
+		log.Printf("Kontol:, %e", err.Error())
 		return
 	}
 
 	friendCode, err := h.store.GenerateFriendCode()
 	if err != nil {
 		utils.WriteError(w, http.StatusInternalServerError, fmt.Errorf("failed to generate friend code"))
+		log.Printf("Kontol:, %e", err.Error())
 		return
 	}
 
@@ -110,11 +123,13 @@ func (h *Handler) handleRegister(w http.ResponseWriter, r *http.Request) {
 
 	if err := h.store.CreateUser(user); err != nil {
 		utils.WriteError(w, http.StatusInternalServerError, fmt.Errorf("failed to create user", err.Error()))
+		log.Printf("Kontol:, %e", err.Error())
 		return
 	}
 
 	if err := utils.SendEmailOTP(payload.Email, otp); err != nil {
 		utils.WriteError(w, http.StatusInternalServerError, fmt.Errorf("failed to send OTP email"))
+		log.Printf("Kontol:, %e", err.Error())
 		return
 	}
 
@@ -123,13 +138,29 @@ func (h *Handler) handleRegister(w http.ResponseWriter, r *http.Request) {
 	token, err := auth.GenerateJWT(user.ID.String())
 	if err != nil {
 		utils.WriteError(w, http.StatusInternalServerError, fmt.Errorf("failed to generate token"))
+		log.Printf("Kontol:, %e", err.Error())
+		return
+	}
+
+	refreshToken := uuid.New().String()
+	refreshExp := time.Now().Add(7 * 24 * time.Hour)
+	if err := h.store.SaveRefreshToken(types.RefreshToken{
+		ID:        uuid.New(),
+		UserID:    user.ID,
+		Token:     refreshToken,
+		ExpiresAt: refreshExp,
+	}); err != nil {
+		utils.WriteError(w, http.StatusInternalServerError, fmt.Errorf("cannot save refresh token"))
+		log.Printf("Kontol:, %e", err.Error())
 		return
 	}
 
 	utils.WriteJSON(w, http.StatusCreated, map[string]any{
-		"message":    "user created succesfully",
-		"token":      token,
-		"isVerified": false,
+		"message":      "user created successfully",
+		"accessToken":  token,
+		"refreshToken": refreshToken,
+		"isVerified":   user.IsVerified,
+		"expiresIn":    "900",
 	})
 }
 
@@ -221,10 +252,10 @@ func (h *Handler) handleLogin(w http.ResponseWriter, r *http.Request) {
 	}
 
 	utils.WriteJSON(w, http.StatusOK, map[string]any{
-		"message":      "OTP sent to your email",
 		"accessToken":  accessToken,
 		"refreshToken": refreshToken,
 		"isVerified":   u.IsVerified,
+		"expiresIn":    "900",
 	})
 }
 
@@ -401,27 +432,32 @@ func (h *Handler) handleVerifyOTP(w http.ResponseWriter, r *http.Request) {
 	var payload types.VerifyOTPPayload
 	if err := utils.ParseJSON(r, &payload); err != nil {
 		utils.WriteError(w, http.StatusBadRequest, err)
+		log.Printf("Kontol:, %e", err.Error())
 		return
 	}
 
 	if err := utils.Validate.Struct(payload); err != nil {
 		utils.WriteError(w, http.StatusBadRequest, fmt.Errorf("invalid payload"))
+		log.Printf("Kontol:, %e", err.Error())
 		return
 	}
 
 	user, err := h.store.GetUserByEmail(payload.Email)
 	if err != nil {
 		utils.WriteError(w, http.StatusBadRequest, fmt.Errorf("User not found", err.Error()))
+		log.Printf("Kontol:, %e", err.Error())
 		return
 	}
 
 	if user.VerificationOTP != payload.OTP {
 		utils.WriteError(w, http.StatusBadRequest, fmt.Errorf("Invalid OTP"))
+		log.Printf("Kontol:, %e", err.Error())
 		return
 	}
 
 	if time.Now().After(user.OTPExp) {
 		utils.WriteError(w, http.StatusBadRequest, fmt.Errorf("OTP Expired"))
+		log.Printf("Kontol:, %e", err.Error())
 		return
 	}
 
@@ -431,13 +467,13 @@ func (h *Handler) handleVerifyOTP(w http.ResponseWriter, r *http.Request) {
 
 	if err := h.store.UpdateUser(*user); err != nil {
 		utils.WriteError(w, http.StatusInternalServerError, fmt.Errorf("Failed to verify user"))
+		log.Printf("Kontol:, %e", err.Error())
 		return
 	}
 
 	utils.WriteJSON(w, http.StatusOK, map[string]any{
 		"message":    "Account verified successfully",
 		"isVerified": user.IsVerified,
-		"needsSetup": !user.IsVerified,
 	})
 }
 
@@ -506,11 +542,13 @@ func (h *Handler) handleOnboarding(w http.ResponseWriter, r *http.Request) {
 	var payload types.OnboardingPayload
 	if err := utils.ParseJSON(r, &payload); err != nil {
 		utils.WriteError(w, http.StatusBadRequest, err)
+		log.Printf("Kontol:, %e", err.Error())
 		return
 	}
 
 	if err := utils.Validate.Struct(payload); err != nil {
-		utils.WriteError(w, http.StatusBadRequest, fmt.Errorf("invalid input"))
+		utils.WriteError(w, http.StatusBadRequest, fmt.Errorf("invalid input", err.Error()))
+		log.Printf("Kontol:, %e", err.Error())
 		return
 	}
 
@@ -518,11 +556,13 @@ func (h *Handler) handleOnboarding(w http.ResponseWriter, r *http.Request) {
 	user, err := h.store.GetUserByID(id)
 	if err != nil {
 		utils.WriteError(w, http.StatusNotFound, fmt.Errorf("user not found", err.Error()))
+		log.Printf("Kontol:, %e", err.Error())
 		return
 	}
 
 	if user.IsVerified {
 		utils.WriteError(w, http.StatusBadRequest, fmt.Errorf("onboarding already completed"))
+		log.Printf("Kontol:, %e", err.Error())
 		return
 	}
 
@@ -534,6 +574,7 @@ func (h *Handler) handleOnboarding(w http.ResponseWriter, r *http.Request) {
 
 	if err := h.store.UpdateUser(*user); err != nil {
 		utils.WriteError(w, http.StatusInternalServerError, fmt.Errorf("failed to complete onboarding"))
+		log.Printf("Kontol:, %e", err.Error())
 		return
 	}
 
@@ -628,6 +669,7 @@ func (h *Handler) handleProfile(w http.ResponseWriter, r *http.Request) {
 		"email":        user.Email,
 		"profileImage": user.ProfileImage,
 		"bio":          user.Bio,
+		"isVerified":   user.IsVerified,
 		"createdAt":    user.CreatedAt,
 	})
 
@@ -937,59 +979,6 @@ func (h *Handler) handleGetBlockedUsers(w http.ResponseWriter, r *http.Request) 
 	utils.WriteJSON(w, http.StatusOK, result)
 }
 
-func (h *Handler) handleSendMessage(w http.ResponseWriter, r *http.Request) {
-	var payload struct {
-		ReceiverID string `json:"receiverId" validate:"required"`
-		Content    string `json:"content"`
-		ImageURL   string `json:"imageUrl"`
-	}
-
-	if err := utils.ParseJSON(r, &payload); err != nil {
-		utils.WriteError(w, http.StatusBadRequest, err)
-		return
-	}
-
-	if err := utils.Validate.Struct(payload); err != nil {
-		utils.WriteError(w, http.StatusBadRequest, fmt.Errorf("invalid input"))
-		return
-	}
-
-	if payload.Content == "" && payload.ImageURL == "" {
-		utils.WriteError(w, http.StatusBadRequest, fmt.Errorf("message must have content or image"))
-		return
-	}
-
-	senderID, _ := r.Context().Value(middleware.UserIDKey).(string)
-	sender, _ := uuid.Parse(senderID)
-	receiverID, err := uuid.Parse(payload.ReceiverID)
-	if err != nil {
-		utils.WriteError(w, http.StatusBadRequest, fmt.Errorf("invalid receiver ID"))
-		return
-	}
-
-	isFriend, err := h.store.AreFriends(sender, receiverID)
-	if err != nil || !isFriend {
-		utils.WriteError(w, 403, fmt.Errorf("you can only message friends"))
-		return
-	}
-
-	convoID, err := h.store.GetOrCreateConversation(sender, receiverID)
-	if err != nil {
-		utils.WriteError(w, http.StatusInternalServerError, fmt.Errorf("failed to get/create conversations", err.Error()))
-		return
-	}
-
-	err = h.store.SendMessage(convoID, sender, payload.Content, payload.ImageURL)
-	if err != nil {
-		utils.WriteError(w, http.StatusInternalServerError, fmt.Errorf("failed to send message"))
-		return
-	}
-
-	utils.WriteJSON(w, http.StatusOK, map[string]string{
-		"message": "message sent",
-	})
-}
-
 func (h *Handler) handleGetMessages(w http.ResponseWriter, r *http.Request) {
 	vars := mux.Vars(r)
 	convoID := vars["conversationId"]
@@ -1015,4 +1004,143 @@ func (h *Handler) handleGetMessages(w http.ResponseWriter, r *http.Request) {
 	}
 
 	utils.WriteJSON(w, http.StatusOK, messages)
+}
+
+func (h *Handler) handleGetConversations(w http.ResponseWriter, r *http.Request) {
+	userID := r.Context().Value(middleware.UserIDKey).(string)
+	user, _ := uuid.Parse(userID)
+
+	conversations, err := h.store.GetUserConversations(user)
+	if err != nil {
+		utils.WriteError(w, http.StatusInternalServerError, fmt.Errorf("failed to fetch conversations"))
+		return
+	}
+
+	utils.WriteJSON(w, http.StatusOK, conversations)
+}
+
+func (h *Handler) handleUploadImage(w http.ResponseWriter, r *http.Request) {
+	err := r.ParseMultipartForm(10 << 20)
+	if err != nil {
+		utils.WriteError(w, http.StatusBadRequest, fmt.Errorf("failed to parse form"))
+		return
+	}
+
+	file, handler, err := r.FormFile("image")
+	if err != nil {
+		utils.WriteError(w, http.StatusBadRequest, fmt.Errorf("image not found"))
+		return
+	}
+	defer file.Close()
+
+	userID := r.Context().Value(middleware.UserIDKey).(string)
+	folder := r.FormValue("folder")
+	if folder == "" {
+		folder = "messaging"
+	}
+
+	imageURL, err := h.upload.UploadImage(file, folder+"/"+userID, handler.Filename)
+	if err != nil || imageURL == "" {
+		utils.WriteError(w, http.StatusInternalServerError, fmt.Errorf("upload failed"))
+		return
+	}
+
+	utils.WriteJSON(w, http.StatusOK, map[string]string{
+		"url": imageURL,
+	})
+}
+
+func (h *Handler) handlePostStory(w http.ResponseWriter, r *http.Request) {
+	err := r.ParseMultipartForm(10 << 20)
+	if err != nil {
+		utils.WriteError(w, http.StatusBadRequest, fmt.Errorf("invalid form"))
+		return
+	}
+
+	file, handler, err := r.FormFile("image")
+	if err != nil {
+		utils.WriteError(w, http.StatusBadRequest, fmt.Errorf("image missing"))
+		return
+	}
+	defer file.Close()
+
+	userID := r.Context().Value(middleware.UserIDKey).(string)
+	caption := r.FormValue("caption")
+
+	imageURL, err := h.upload.UploadImage(file, "stories/"+userID, handler.Filename)
+
+	story := types.Story{
+		ID:        uuid.New(),
+		UserID:    uuid.MustParse(userID),
+		MediaURL:  imageURL,
+		Caption:   caption,
+		CreatedAt: time.Now(),
+		ExpiresAt: time.Now().Add(24 * time.Hour),
+	}
+
+	if err := h.store.CreateStory(story); err != nil {
+		utils.WriteError(w, http.StatusInternalServerError, fmt.Errorf("failed to save story"))
+		return
+	}
+
+	utils.WriteJSON(w, http.StatusOK, story)
+}
+
+func (h *Handler) handleGetStories(w http.ResponseWriter, r *http.Request) {
+	userID := r.Context().Value(middleware.UserIDKey).(string)
+	user, _ := uuid.Parse(userID)
+
+	stories, err := h.store.GetStories(user)
+	if err != nil || stories == nil {
+		utils.WriteError(w, http.StatusInternalServerError, fmt.Errorf("failed to fetch stories"))
+		return
+	}
+
+	utils.WriteJSON(w, http.StatusOK, stories)
+}
+
+func (h *Handler) handleMarkStoryViewed(w http.ResponseWriter, r *http.Request) {
+	vars := mux.Vars(r)
+	storyID := vars["storyId"]
+
+	story, err := uuid.Parse(storyID)
+	if err != nil {
+		utils.WriteError(w, http.StatusBadRequest, fmt.Errorf("invalid story ID"))
+		return
+	}
+
+	viewerID := r.Context().Value(middleware.UserIDKey).(string)
+	viewer, _ := uuid.Parse(viewerID)
+
+	err = h.store.MarkStoryViewed(story, viewer)
+	if err != nil {
+		utils.WriteError(w, http.StatusInternalServerError, fmt.Errorf("failed to mark story as viewed"))
+		return
+	}
+
+	utils.WriteJSON(w, http.StatusOK, map[string]string{
+		"message": "view recorded",
+	})
+}
+
+func (h *Handler) handleGetStoryViewers(w http.ResponseWriter, r *http.Request) {
+	vars := mux.Vars(r)
+	storyID := vars["storyId"]
+
+	story, err := uuid.Parse(storyID)
+	if err != nil {
+		utils.WriteError(w, http.StatusBadRequest, fmt.Errorf("invalid story ID"))
+		return
+	}
+
+	userID := r.Context().Value(middleware.UserIDKey).(string)
+	user, _ := uuid.Parse(userID)
+
+	viewers, err := h.store.GetStoryViewers(story, user)
+	if err != nil {
+		utils.WriteError(w, 403, fmt.Errorf("unauthorized or failed: %v", err))
+		return
+	}
+
+	utils.WriteJSON(w, http.StatusOK, viewers)
 }

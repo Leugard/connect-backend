@@ -9,7 +9,7 @@ import (
 
 type Manager struct {
 	Clients map[uuid.UUID][]*websocket.Conn
-	mu      sync.Mutex
+	mu      sync.RWMutex
 }
 
 func NewManager() *Manager {
@@ -46,4 +46,12 @@ func (m *Manager) Send(userID uuid.UUID, data any) {
 	for _, conn := range m.Clients[userID] {
 		_ = conn.WriteJSON(data)
 	}
+}
+
+func (m *Manager) IsOnline(userID uuid.UUID) bool {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	_, ok := m.Clients[userID]
+	return ok
 }

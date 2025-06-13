@@ -3,7 +3,6 @@ package websocket
 import (
 	"log"
 	"net/http"
-	"time"
 
 	"github.com/Leugard/connect-backend/middleware"
 	"github.com/Leugard/connect-backend/types"
@@ -32,50 +31,120 @@ func (h *Handler) HandleWebSocket(w http.ResponseWriter, r *http.Request) {
 	userID := r.Context().Value(middleware.UserIDKey).(string)
 	user, _ := uuid.Parse(userID)
 	h.Manager.Add(user, conn)
-	defer h.Manager.Remove(user, conn)
-	defer conn.Close()
+
+	defer func() {
+		log.Printf("[WS][%s] Disconnected\n", userID)
+		h.Manager.Remove(user, conn)
+		conn.Close()
+	}()
 
 	for {
-		var payload struct {
-			ReceiverID string `json:"receiverId"`
-			Content    string `json:"content"`
-			ImageURL   string `json:"imageUrl"`
+		var msg struct {
+			Type           string `json:"type"`
+			ReceiverID     string `json:"receiverId"`
+			Content        string `json:"content"`
+			ImageURL       string `json:"imageUrl"`
+			ConversationID string `json:"conversationId"`
+			IsTyping       bool   `json:"isTyping"`
 		}
-		err := conn.ReadJSON(&payload)
-		if err != nil {
-			log.Println("read error:", err.Error())
+
+		if err := conn.ReadJSON(&msg); err != nil {
+			log.Printf("[WS][%s] Read error: %v\n", userID, err)
 			break
 		}
 
-		receiverID, err := uuid.Parse(payload.ReceiverID)
-		if err != nil {
-			continue
-		}
+		log.Printf("[WS][%s] Received: %+v\n", userID, msg)
 
-		isFriend, err := h.Store.AreFriends(user, receiverID)
-		if err != nil || !isFriend {
-			continue
+		switch msg.Type {
+		case "message":
+			h.handleSendMessage(user, struct {
+				ReceiverID string
+				Content    string
+				ImageURL   string
+			}{
+				ReceiverID: msg.ReceiverID,
+				Content:    msg.Content,
+				ImageURL:   msg.ImageURL,
+			})
+		case "read":
+			h.handleMarkRead(user, msg.ConversationID)
+		case "typing":
+			h.handleTyping(user, msg.ReceiverID, msg.IsTyping)
 		}
+	}
+}
 
-		convoID, err := h.Store.GetOrCreateConversation(user, receiverID)
-		if err != nil {
-			continue
-		}
+func (h *Handler) handleSendMessage(sender uuid.UUID, msg struct {
+	ReceiverID string
+	Content    string
+	ImageURL   string
+}) {
+	receiverID, err := uuid.Parse(msg.ReceiverID)
+	if err != nil {
+		log.Println("[WS] Invalid receiver ID:", msg.ReceiverID)
+		return
+	}
 
-		err = h.Store.SendMessage(convoID, user, payload.Content, payload.ImageURL)
-		if err != nil {
-			continue
-		}
+	isFriend, err := h.Store.AreFriends(sender, receiverID)
+	if err != nil || !isFriend {
+		log.Println("[WS] Not friends or failed:", err)
+		return
+	}
 
-		message := map[string]any{
-			"from":           user.String(),
-			"content":        payload.Content,
-			"imageUrl":       payload.ImageURL,
-			"createdAt":      time.Now(),
-			"conversationId": convoID.String(),
-		}
+	convoID, err := h.Store.GetOrCreateConversation(sender, receiverID)
+	if err != nil {
+		log.Println("[WS] GetOrCreateConversation failed:", err)
+		return
+	}
 
-		h.Manager.Send(receiverID, message)
-		h.Manager.Send(user, message)
+	message, err := h.Store.SendMessage(convoID, sender, msg.Content, msg.ImageURL)
+	if err != nil {
+		log.Println("[WS] SendMessage failed:", err)
+		return
+	}
+
+	if h.Manager.IsOnline(receiverID) {
+		h.Store.UpdateMessageStatus(message.ID, "delivered")
+		message.Status = "delivered"
+	} else {
+		message.Status = "unread"
+	}
+
+	response := map[string]any{
+		"type":           "message",
+		"message":        message,
+		"conversationId": convoID.String(),
+	}
+
+	h.Manager.Send(sender, response)
+	h.Manager.Send(receiverID, response)
+
+}
+
+func (h *Handler) handleTyping(sender uuid.UUID, receiverID string, isTyping bool) {
+	receiver, err := uuid.Parse(receiverID)
+	if err != nil {
+		return
+	}
+
+	if h.Manager.IsOnline(receiver) {
+		h.Manager.Send(receiver, map[string]any{
+			"type":     "typing",
+			"userId":   sender.String(),
+			"isTyping": isTyping,
+		})
+	}
+}
+
+func (h *Handler) handleMarkRead(userID uuid.UUID, convoID string) {
+	convo, err := uuid.Parse(convoID)
+	if err != nil {
+		log.Println("[WS] invalid convo for read:", convoID)
+		return
+	}
+
+	err = h.Store.MarkMessagesAsRead(convo, userID)
+	if err != nil {
+		log.Println("[WS] markmessageasread failed:", err)
 	}
 }
